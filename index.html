@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Get FiniteGram</title>
+<meta name="description" content="Instagram, with an ending: stories from the people you choose, without ads, reels or endless scrolling.">
+<meta property="og:url" content="https://deedubs531.github.io/finitegram/">
+<meta property="og:image" content="https://deedubs531.github.io/finitegram/icon.png">
+<meta property="og:title" content="FiniteGram: Instagram, with an ending">
+<meta property="og:description" content="Stories from the people you choose. No ads, no reels, no endless scrolling. Set up in five minutes on iPhone.">
+<link rel="icon" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png">
+<style>
+  /* One column, read top to bottom on a phone: what it is, four numbered steps, what happens next. */
+  :root {
+    --bg: #fafaf8; --fg: #141414; --muted: #5f5f5f; --line: #e4e2dc; --card: #fff;
+    --accent: #1f7a4d; --on-accent: #fff;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0b0b0c; --fg: #ededed; --muted: #9a9a9a; --line: #262626; --card: #141414; --accent: #2e9e66; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 -apple-system, system-ui, sans-serif;
+    padding: calc(env(safe-area-inset-top, 0px) + 28px) 20px calc(env(safe-area-inset-bottom, 0px) + 40px); }
+  main { max-width: 520px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+  header { display: flex; flex-direction: column; gap: 12px; }
+  .mark { width: 64px; height: 64px; border-radius: 15px; }
+  h1 { font-size: 30px; line-height: 1.15; margin: 0; text-wrap: balance; letter-spacing: -.01em; }
+  .lead { font-size: 17px; margin: 0; }
+  .points { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; color: var(--muted); }
+  .points li { padding-left: 16px; position: relative; }
+  .points li::before { content: "·"; position: absolute; left: 2px; color: var(--fg); font-weight: 700; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 6px 0 -8px; }
+  ol.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; counter-reset: s; }
+  ol.steps > li { counter-increment: s; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px 16px 16px 58px; position: relative; }
+  ol.steps > li::before { content: counter(s); position: absolute; left: 16px; top: 15px; width: 28px; height: 28px; border-radius: 50%;
+    display: grid; place-items: center; font-weight: 700; font-size: 14px; background: var(--fg); color: var(--bg); }
+  ol.steps > li > b { display: block; margin-bottom: 4px; }
+  ol.steps p { margin: 0; color: var(--muted); font-size: 15px; }
+  .btn { display: inline-block; margin-top: 10px; padding: 12px 18px; border-radius: 24px; background: var(--accent); color: var(--on-accent);
+    text-decoration: none; font-weight: 600; }
+  .btn.quiet { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+  .note { font-size: 14px; color: var(--muted); margin: 0; }
+  footer { font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 16px; }
+  a { color: inherit; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img class="mark" src="icon.png" alt="">
+    <h1>Instagram, with an ending.</h1>
+    <p class="lead">FiniteGram keeps the part of Instagram that's about people you care about, and drops the rest.</p>
+    <ul class="points">
+      <li>No ads, reels, suggested posts or endless scrolling.</li>
+      <li>Just the stories of people you choose, in your own lists: close friends, a hobby, a city.</li>
+      <li>Each list ends with "You're caught up." Open a profile or a message when you mean to.</li>
+    </ul>
+  </header>
+
+  <h2>Set up on iPhone · about 5 minutes</h2>
+  <ol class="steps">
+    <li>
+      <b>Get the free Userscripts app</b>
+      <p>It lets Safari run FiniteGram. Open it once after installing; you don't need to change anything inside.</p>
+      <a class="btn quiet" href="https://apps.apple.com/app/userscripts/id1463298887">Open in the App Store</a>
+    </li>
+    <li>
+      <b>Turn it on in Safari</b>
+      <p>Settings → Apps → Safari → Extensions → Userscripts: switch it on, and set instagram.com (or All Websites) to Allow.</p>
+    </li>
+    <li>
+      <b>Install FiniteGram</b>
+      <p>Open this page in <b>Safari</b>, tap the button, then tap the puzzle-piece (or <b>ᴬA</b>) button in the address bar → Userscripts → Install.</p>
+      <a class="btn" href="finitegram.user.js">Install FiniteGram</a>
+    </li>
+    <li>
+      <b>Open instagram.com in Safari and log in</b>
+      <p>FiniteGram greets you and walks you through the rest: bringing in who you follow, making your lists, and adding its icon to your home screen.</p>
+      <a class="btn quiet" href="https://www.instagram.com/">Open instagram.com</a>
+    </li>
+  </ol>
+
+  <p class="note">It works in Safari, not in the Instagram app, which can't be changed. Once it's set up, move the Instagram app off your home screen so FiniteGram is where you go.</p>
+
+  <footer>
+    Everything stays on your phone: your lists, and who you follow. FiniteGram talks only to Instagram, using your own login,
+    and asks for the same things Instagram's story bar does. Updates arrive through the Userscripts app.
+  </footer>
+</main>
+</body>
+</html>
