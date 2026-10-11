@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FiniteGram
 // @namespace    finity
-// @version      5.0.0
+// @version      5.1.0
 // @description  Replaces the instagram.com home feed with stories from lists you choose. No ads, reels or endless scrolling.
 // @match        https://www.instagram.com/*
 // @match        https://instagram.com/*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '5.0';
+  const VERSION = '5.1';
   const APP_NAME = 'FiniteGram'; // the name offered when adding to the home screen
   const SETTINGS_KEY = 'finity-close-friends';
   const STORIES_KEY = 'finity-cf-stories';
@@ -31,7 +31,8 @@
   const VIEW_KEY = 'finity-cf-view'; // where you were on the sorting screen, kept while you look at a profile
   const ME_KEY = 'finity-cf-me'; // which account is logged in, checked once per visit
   const QUEUE_KEY = 'finity-cf-queue'; // the rest of the list's new stories, while you're watching
-  const STORIES_FRESH_MIN = 5;
+  const NAV_KEY = 'finity-cf-nav'; // the previous page, the last conversation, and the reel opened from it
+  const PULL_TRIGGER = 64; // how far to pull down (after damping) before letting go refreshes
   const PAGE_PAUSE_MS = 1500; // between pages of the following list
   const DEFAULT_LISTS = [
     { id: 'close', name: 'Close friends' },
@@ -90,6 +91,7 @@
       active: info.some((l) => l.id === s.active) ? s.active : info[0].id,
       onboarded: s.onboarded === true || fromBefore5,
       mainAccount: normalizeName(s.mainAccount || '') || (fromBefore5 ? 'deedubs531' : ''),
+      dmReels: s.dmReels !== false,
     };
   }
 
@@ -107,16 +109,31 @@
     return id;
   }
 
-  /** What to do with an address: show our 'home', 'story' (allowed), 'block' it, send 'to-search', or leave it 'ok'. */
+  /**
+   * What to do with an address: show our 'home', 'story' (allowed), a single 'reel' (decided by
+   * reelDecision), 'block' it, send 'to-search', or leave it 'ok'.
+   */
   function routeFor(pathname, people) {
     const path = pathname.toLowerCase();
     if (path === '/' || path === '') return 'home';
-    if (/^\/reels?(\/|$)/.test(path) || /^\/[a-z0-9._]+\/reels\/?$/.test(path)) return 'block';
+    if (/^\/reels?\/?$/.test(path) || /^\/[a-z0-9._]+\/reels\/?$/.test(path)) return 'block'; // the Reels feed and profile Reels tabs
+    if (/^\/reels?\/[^/]+/.test(path)) return 'reel';
     if (/^\/explore\/search(\/|$)/.test(path)) return 'ok';
     if (/^\/explore(\/|$)/.test(path)) return 'to-search';
     const story = path.match(/^\/stories\/([^/]+)/);
     if (story) return story[1] === 'highlights' || people.has(story[1]) ? 'story' : 'block';
     return 'ok';
+  }
+
+  /**
+   * A single reel: 'allow' it when it was opened from Messages (or is the one already allowed),
+   * 'back' to the conversation when Instagram moves on to the next reel, otherwise 'block'.
+   */
+  function reelDecision(code, prevPath, allowedCode, enabled) {
+    if (!enabled) return 'block';
+    if (code && code === allowedCode) return 'allow';
+    if (String(prevPath || '').startsWith('/direct/')) return 'allow';
+    return allowedCode ? 'back' : 'block';
   }
 
   /**
@@ -238,7 +255,7 @@
   const icon = (name) => `<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 
   const CSS = `
-    a[href="/reels/"], a[href^="/reels/"] { display: none !important; }
+    a[href="/reels/"], a[href$="/reels/"] { display: none !important; } /* the Reels tab and profile Reels tabs */
     html.cf-on, html.cf-on body { overflow: hidden !important; }
     /* In Instagram's story viewer, stop iPhone's long-press menu and text selection from stealing
        the press-and-hold that pauses a story, and taps that skip ahead. */
@@ -253,6 +270,17 @@
       #cf { --bg: #000; --card: #121212; --fg: #eee; --muted: #8e8e8e; --line: #2a2a2a; --accent: #2e9e66; }
     }
     #cf * { box-sizing: border-box; }
+    #cf { overscroll-behavior: contain; }
+    /* Only the content moves when pulled; the tab bar and Done bar stay put. */
+    #cf #cf-main > .wrap { transform: translateY(calc(var(--pull, 0) * 1px)); }
+    #cf.cf-settle #cf-main > .wrap { transition: transform .45s cubic-bezier(.2, 1.4, .4, 1); } /* a little overshoot: the bounce */
+    #cf #cf-ptr { position: absolute; left: 0; right: 0; top: calc(env(safe-area-inset-top, 0px) + 10px); display: flex; justify-content: center;
+      align-items: center; gap: 8px; color: var(--muted); font-size: 13px; opacity: min(1, calc(var(--pull, 0) / 48)); pointer-events: none; }
+    #cf #cf-ptr .spin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--muted);
+      transform: rotate(calc(var(--pull, 0) * 4deg)); }
+    #cf.cf-ready #cf-ptr { color: var(--fg); }
+    #cf.cf-settle.cf-ready #cf-ptr .spin { animation: cf-spin .8s linear infinite; }
+    @keyframes cf-spin { to { transform: rotate(360deg); } }
     #cf .wrap { max-width: 520px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
     #cf .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     #cf .lists { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 0 16px; }
@@ -333,7 +361,7 @@
     const acctLabel = (id) => (following[id]?.name ? '@' + following[id].name : `account ${Object.keys(following).indexOf(id) + 1}`);
     const saveSettings = () => save(SETTINGS_KEY, {
       ...load(SETTINGS_KEY), listInfo: settings.info, lists: settings.lists, active: settings.active,
-      onboarded: settings.onboarded, mainAccount: settings.mainAccount,
+      onboarded: settings.onboarded, mainAccount: settings.mainAccount, dmReels: settings.dmReels,
     });
 
     // --- routing ---
@@ -348,6 +376,22 @@
       document.documentElement?.classList.toggle('cf-story', route === 'story');
       if (path !== lastPath) {
         lastPath = path;
+        // Remembered across page loads: where you just were, and your last conversation.
+        const nav = load(NAV_KEY, sessionStorage) || {};
+        const prev = nav.path;
+        nav.path = path;
+        if (path.startsWith('/direct/')) nav.direct = path;
+        if (route === 'reel') {
+          const code = path.split('/')[2] || '';
+          const verdict = reelDecision(code, prev, nav.reel, settings.dmReels);
+          nav.reel = verdict === 'allow' ? code : '';
+          save(NAV_KEY, nav, sessionStorage);
+          if (verdict === 'back') return location.replace(nav.direct || '/direct/inbox/'); // no scrolling on to more reels
+          if (verdict === 'block') return location.replace('/');
+          return;
+        }
+        nav.reel = '';
+        save(NAV_KEY, nav, sessionStorage);
         if (route === 'block') return location.replace(path.startsWith('/stories/') ? nextStory(path) : '/');
         if (route === 'to-search') return location.replace('/explore/search/');
         if (route === 'story') takeFromQueue(path);
@@ -373,8 +417,8 @@
       if (stories.tray) {
         const t = stories.tray.find((x) => normalizeName(x?.user?.username || '') === n);
         if (t) {
+          // Marked here, so it's already under Seen when you come back; no reload needed.
           stories.watched = { ...stories.watched, [n]: Number(t.latest_reel_media) || Math.floor(Date.now() / 1000) };
-          stories.at = 0; // look again when you're back, so Instagram's seen marks are current
           save(STORIES_KEY, stories);
         }
       }
@@ -391,16 +435,24 @@
       if (first) {
         root = document.createElement('div');
         root.id = 'cf';
+        root.innerHTML = '<div id="cf-ptr" aria-hidden="true"><span class="spin"></span><span class="label"></span></div><div id="cf-main"></div>';
+        shown = '';
         root.addEventListener('click', onClick);
         root.addEventListener('input', onInput);
         root.addEventListener('change', onChange);
+        addPullToRefresh(root);
       }
       document.body.appendChild(root);
       document.documentElement.classList.add('cf-on');
       const back = first && restoreSpot();
       render();
       if (back) root.scrollTop = back.scroll || 0;
-      if (first) refreshStories(false).then(checkAccount);
+      // Stories only reload when you pull down (or the very first time), so nothing moves under your finger.
+      if (first) {
+        if (stories.tray) refreshUnread();
+        else refreshStories();
+        checkAccount();
+      }
     }
 
     // Coming back from a profile opened on the sorting screen: same search, filter and scroll.
@@ -418,6 +470,38 @@
       return spot;
     }
 
+    // Pull down on the stories page and let go to refresh, with a bounce back like Instagram's.
+    function addPullToRefresh(el) {
+      let pull = null; // { y0, d } while a pull is under way
+      const set = (d, settle, label = '') => {
+        el.classList.toggle('cf-settle', settle);
+        el.style.setProperty('--pull', String(d)); // a plain number of pixels
+        el.querySelector('#cf-ptr .label').textContent = label;
+        el.classList.toggle('cf-ready', label === 'Release to refresh' || label === 'Refreshing…');
+      };
+      el.addEventListener('touchstart', (e) => {
+        pull = view === 'stories' && !loading && el.scrollTop <= 0 && e.touches.length === 1 ? { y0: e.touches[0].clientY, d: 0 } : null;
+      }, { passive: true });
+      el.addEventListener('touchmove', (e) => {
+        if (!pull) return;
+        const dy = e.touches[0].clientY - pull.y0;
+        if (dy <= 0 || el.scrollTop > 0) return set((pull.d = 0), false);
+        e.preventDefault(); // we're doing the stretching, not Safari
+        pull.d = Math.min(140, dy * 0.5);
+        set(pull.d, false, pull.d >= PULL_TRIGGER ? 'Release to refresh' : 'Pull to refresh');
+      }, { passive: false });
+      const release = () => {
+        if (!pull) return;
+        const go = pull.d >= PULL_TRIGGER;
+        pull = null;
+        if (!go) return set(0, true);
+        set(56, true, 'Refreshing…');
+        refreshStories().then(() => set(0, true));
+      };
+      el.addEventListener('touchend', release);
+      el.addEventListener('touchcancel', release);
+    }
+
     function hide() {
       if (!root) return;
       root.remove();
@@ -426,9 +510,9 @@
     }
 
     // --- loading ---
-    // Stories: one request for who has a story up (kept for 5 minutes), plus the unread-messages count.
-    async function refreshStories(force) {
-      if (loading || (!force && stories.tray && Date.now() - stories.at < STORIES_FRESH_MIN * 60000)) return render();
+    // Stories: one request for who has a story up, plus the unread-messages count.
+    async function refreshStories() {
+      if (loading) return;
       loading = true;
       problem = '';
       render();
@@ -443,16 +527,23 @@
         stories.at = Date.now();
       } catch (err) {
         if (err.status === 401) needsLogin = true; // logged out: show Instagram (and its login) instead
-        problem = `Couldn't load stories (${err.message}). Tap Refresh to try again.`;
+        problem = `Couldn't load stories (${err.message}). Pull down to try again.`;
       }
-      try {
-        stories.unread = Number((await igGet('/api/v1/direct_v2/get_badge_count/?no_raven=1'))?.badge_count) || 0;
-      } catch {
-        // Unknown: Messages just looks as usual.
-      }
+      await refreshUnread();
       save(STORIES_KEY, stories);
       loading = false;
       render();
+    }
+
+    // Whether Messages has something unread: only the tab's look changes, nothing else moves.
+    async function refreshUnread() {
+      try {
+        stories.unread = Number((await igGet('/api/v1/direct_v2/get_badge_count/?no_raven=1'))?.badge_count) || 0;
+        save(STORIES_KEY, stories);
+        root?.querySelector('.tab[href="/direct/inbox/"]')?.classList.toggle('unread', stories.unread > 0);
+      } catch {
+        // Unknown: Messages just looks as usual.
+      }
     }
 
     // Which account is logged in: from the cookie and loaded follows when possible, otherwise one
@@ -537,20 +628,25 @@
     }
 
     // --- drawing ---
+    let shown = '';
     function render() {
       if (!root) return;
-      const top = root.scrollTop;
       const body = view === 'sort' ? sortView() : view === 'setup' ? setupView() : storiesView();
       const bottom = view === 'sort'
         ? '<div class="donebar"><button type="button" class="primary" data-act="done">Done</button></div>'
         : view === 'setup' && !settings.onboarded ? '' : tabbar(); // first-time setup stays on its steps
-      root.innerHTML = `<div class="wrap">${body}</div>${bottom}`;
+      const html = `<div class="wrap">${body}</div>${bottom}`;
+      if (html === shown) return; // nothing changed: leave the page alone so taps aren't lost
+      shown = html;
+      const top = root.scrollTop;
+      root.querySelector('#cf-main').innerHTML = html;
       root.scrollTop = top;
     }
 
     // Update just the parts that change, so typing in search isn't interrupted.
     function renderPart() {
       if (!root) return;
+      shown = ''; // the page is being changed piece by piece; the next full draw must happen
       if (view !== 'sort') return render();
       root.querySelector('#cf-lists').innerHTML = listButtons();
       root.querySelector('#cf-status').innerHTML = statusLines();
@@ -593,17 +689,25 @@
       if (!names.length) body = `<p class="status">No one in ${escapeHtml(listName())} yet. Tap Sort accounts to add people.</p>`;
       else if (!stories.tray) body = `<p class="status" role="status">${problem ? '' : 'Loading…'}</p>`;
       else {
-        body = `${loading ? '<p class="status" role="status">Refreshing…</p>' : ''}
-          ${fresh.length ? `<div class="stories">${fresh.map((n) => storyCell(n, false)).join('')}</div>` : `<p class="status">You're caught up.</p>`}
+        body = `${fresh.length ? `<div class="stories">${fresh.map((n) => storyCell(n, false)).join('')}</div>` : `<p class="status">You're caught up.</p>`}
           ${seen.length ? `<h2>Seen</h2><div class="stories">${seen.map((n) => storyCell(n, true)).join('')}</div>` : ''}`;
       }
       const wrongAccount = me?.name && settings.mainAccount && me.name !== settings.mainAccount;
       return `<div class="lists" id="cf-lists">${listButtons()}</div>
         ${problem ? `<p class="status error" role="alert">${escapeHtml(problem)}</p>` : ''}
         ${wrongAccount ? `<p class="status error" role="alert">You're logged in as @${escapeHtml(me.name)}, so these are the stories that account follows. Switch to @${escapeHtml(settings.mainAccount)} on Instagram to see yours.</p>` : ''}
-        <div class="row"><h2 style="flex:1;margin:0">Stories · ${escapeHtml(listName())}</h2><button type="button" data-act="refresh">Refresh</button></div>
+        <h2>Stories · ${escapeHtml(listName())}</h2>
         ${body}
-        <p class="end">Finity ${VERSION} · <a href="#" data-act="setup">Setup & help</a></p>`;
+        <p class="end">${stories.at ? `Updated ${ago(stories.at)} · pull down to refresh` : 'Pull down to refresh'}<br>
+          Finity ${VERSION} · <a href="#" data-act="setup">Setup & help</a></p>`;
+    }
+
+    function ago(t) {
+      const min = Math.round((Date.now() - t) / 60000);
+      if (min < 1) return 'just now';
+      if (min < 60) return `${min} min ago`;
+      const h = Math.round(min / 60);
+      return h < 24 ? `${h} h ago` : `${Math.round(h / 24)} d ago`;
     }
 
     function statusLines() {
@@ -720,7 +824,10 @@
           ${step ? '<button type="button" data-act="back">Back</button>' : '<span></span>'}
           <button type="button" class="primary" data-act="${last ? 'finish' : 'next'}">${last ? 'Start' : step ? 'Next' : 'Get started'}</button>
         </div>
-        ${settings.onboarded ? '<p class="end"><a href="#" data-act="home">Back to stories</a></p>' : ''}`;
+        ${settings.onboarded ? `<div class="card"><b>Options</b>
+          <label class="row" style="flex-wrap:nowrap"><input type="checkbox" id="cf-dmreels"${settings.dmReels ? ' checked' : ''}>
+            <span>Play reels people send me in Messages (one at a time; swiping on goes back to the chat)</span></label></div>
+          <p class="end"><a href="#" data-act="home">Back to stories</a></p>` : ''}`;
     }
 
     // --- actions ---
@@ -771,6 +878,9 @@
       if (e.target.id === 'cf-filter') {
         filter = e.target.value;
         renderPart();
+      } else if (e.target.id === 'cf-dmreels') {
+        settings.dmReels = e.target.checked;
+        saveSettings();
       } else if (e.target.dataset.rename) {
         const l = settings.info.find((x) => x.id === e.target.dataset.rename);
         const name = e.target.value.trim().slice(0, 40);
@@ -818,6 +928,7 @@
       if (b.dataset.tag) {
         toggle(b.dataset.tag, b.dataset.user);
         b.setAttribute('aria-pressed', String(settings.lists[b.dataset.tag].includes(b.dataset.user)));
+        shown = '';
         root.querySelector('#cf-lists').innerHTML = listButtons();
         return;
       }
@@ -838,7 +949,6 @@
         return render();
       }
       switch (b.dataset.act) {
-        case 'refresh': refreshStories(true); break;
         case 'home': view = 'stories'; root.scrollTop = 0; render(); break;
         case 'sort': view = 'sort'; filter = ''; problem = ''; notice = ''; root.scrollTop = 0; render(); break;
         case 'done': view = settings.onboarded ? 'stories' : 'setup'; query = ''; problem = ''; notice = ''; root.scrollTop = 0; render(); break;
@@ -851,7 +961,7 @@
           view = 'stories';
           root.scrollTop = 0;
           render();
-          refreshStories(true);
+          refreshStories();
           break;
         case 'following': loadFollowing(); break;
         case 'addlist': {
@@ -898,7 +1008,7 @@
     setInterval(tick, 400);
   }
 
-  const api = { normalizeName, namesFromText, readSettings, shortLabel, newListId, routeFor, storyGroups, usersFromPage, sortRows, followingSummary };
+  const api = { reelDecision, normalizeName, namesFromText, readSettings, shortLabel, newListId, routeFor, storyGroups, usersFromPage, sortRows, followingSummary };
   if (typeof window !== 'undefined' && window.__FINITY_CF_TEST__) window.__FINITY_CF_TEST__ = api;
   else start();
 })();
