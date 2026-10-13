@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FiniteGram
 // @namespace    finity
-// @version      5.3.0
+// @version      5.4.0
 // @description  Replaces the instagram.com home feed with stories from lists you choose. No ads, reels or endless scrolling.
 // @match        https://www.instagram.com/*
 // @match        https://instagram.com/*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '5.3';
+  const VERSION = '5.4';
   const APP_NAME = 'FiniteGram'; // the name offered when adding to the home screen
   const SETTINGS_KEY = 'finity-close-friends';
   const STORIES_KEY = 'finity-cf-stories';
@@ -32,6 +32,8 @@
   const ME_KEY = 'finity-cf-me'; // which account is logged in, checked once per visit
   const QUEUE_KEY = 'finity-cf-queue'; // the rest of the list's new stories, while you're watching
   const NAV_KEY = 'finity-cf-nav'; // the previous page, the last conversation, and the reel opened from it
+  const REEL_LOG_KEY = 'finity-cf-reel-log'; // what happened around reels this visit, for "Reel check" in Setup & help
+  const VIEWER_MIN_HEIGHT = 0.7; // a video at least this share of the screen tall is a reel viewer, not a post
   const PULL_TRIGGER = 64; // how far to pull down (after damping) before letting go refreshes
   const PAGE_PAUSE_MS = 1500; // between pages of the following list
   const DEFAULT_LISTS = [
@@ -277,6 +279,18 @@
     }
   }
 
+  // A short diary of what happened around reels this visit, so a problem on a real phone can be seen.
+  function reelLog(msg) {
+    const log = load(REEL_LOG_KEY, sessionStorage) || [];
+    const t = new Date();
+    log.push(`${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}:${String(t.getSeconds()).padStart(2, '0')} ${msg}`);
+    save(REEL_LOG_KEY, log.slice(-30), sessionStorage);
+  }
+  function reelLogText() {
+    const log = load(REEL_LOG_KEY, sessionStorage) || [];
+    return `FiniteGram ${VERSION} · ${navigator.userAgent.replace(/^.*?\(([^)]*)\).*$/, '$1')}\n${log.join('\n') || '(nothing yet)'}`;
+  }
+
   // ---------- the page ----------
 
   const ICONS = {
@@ -423,11 +437,140 @@
       if (!location.pathname.startsWith('/direct/') || !settings.dmReels || e.target.closest?.('#cf-player')) return;
       const link = e.target.closest?.('a[href]');
       const code = link && reelCode(link.getAttribute('href'));
-      if (!code) return;
+      if (!code) {
+        const el = e.target;
+        reelLog(`tap in chat on <${el.tagName?.toLowerCase()}${el.getAttribute?.('role') ? ' role=' + el.getAttribute('role') : ''}>${link ? ' in link ' + link.getAttribute('href') : ''}`);
+        setTimeout(() => { // what's on screen just after: every video, how big, and where it sits
+          const vids = [...document.querySelectorAll('video:not(#cf-video)')].map((v) => {
+            const r = v.getBoundingClientRect();
+            return `${Math.round(r.width)}x${Math.round(r.height)}@${Math.round(r.top)}${v.closest('article') ? ' in-article' : ''}${v.closest('[role="dialog"]') ? ' in-dialog' : ''}${v.paused ? '' : ' playing'}`;
+          });
+          if (vids.length) reelLog(`  videos: ${vids.join(', ')} · screen ${window.innerHeight}px · ${location.pathname}`);
+        }, 1500);
+        return;
+      }
+      reelLog(`tap on sent reel ${code}: own player`);
       e.preventDefault();
       e.stopImmediatePropagation();
       openPlayer(code, false);
     }, true);
+    // In a chat, Instagram opens a sent reel in a pop-up over the conversation without changing the
+    // address, and lines up suggested reels after it. So, going by what's on screen:
+    // 1. While a full-screen video is showing, up/down swipes and scrolling are switched off from
+    //    the very first movement, and Instagram's own swipe code never hears about them.
+    // 2. In Messages, once a pop-up has shown one reel, a different one starting closes it.
+    function viewerVideo() {
+      const min = window.innerHeight * VIEWER_MIN_HEIGHT;
+      for (const v of document.querySelectorAll('video')) {
+        if (v.id === 'cf-video' || v.closest('article')) continue;
+        const r = v.getBoundingClientRect();
+        if (r.height >= min && r.bottom > 0 && r.top < window.innerHeight) return v;
+      }
+      return null;
+    }
+
+    function scrollableAncestor(el) {
+      for (let n = el; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+        const y = getComputedStyle(n).overflowY;
+        if ((y === 'auto' || y === 'scroll') && n.scrollHeight > n.clientHeight + 1) return n;
+      }
+      return null;
+    }
+
+    function lockApplies(target) {
+      if (!target?.closest || location.pathname.startsWith('/stories/')) return false;
+      if (target.closest('#cf, textarea, input, [contenteditable="true"]')) return false;
+      const video = viewerVideo();
+      if (!video && !player && routeFor(location.pathname, people()) !== 'reel') return false;
+      const scroller = scrollableAncestor(target); // e.g. comments: still scrollable
+      return !(scroller && !(video && scroller.contains(video)));
+    }
+
+    const gesture = { locked: false, axis: '', x: 0, y: 0, target: null, touch: null, pointerId: 1, cancelled: false, logged: false };
+    function startGesture(target, x, y) {
+      Object.assign(gesture, { locked: lockApplies(target), axis: '', x, y, target, cancelled: false, logged: false });
+    }
+    function vertical(x, y) {
+      if (!gesture.axis) {
+        const dx = Math.abs(x - gesture.x), dy = Math.abs(y - gesture.y);
+        if (!dx && !dy) return false;
+        gesture.axis = dy >= dx ? 'y' : 'x';
+      }
+      return gesture.axis === 'y';
+    }
+    function cancelForInstagram() { // it saw the finger go down but not move: tell it the gesture is off
+      if (gesture.cancelled || !gesture.target) return;
+      gesture.cancelled = true;
+      try { gesture.target.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: gesture.pointerId, pointerType: 'touch', isPrimary: true })); } catch { /* not available */ }
+      try { gesture.target.dispatchEvent(new TouchEvent('touchcancel', { bubbles: true, changedTouches: gesture.touch ? [gesture.touch] : [] })); } catch { /* not available */ }
+    }
+    const active = { capture: true, passive: false };
+    window.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'touch' || !e.isPrimary) return;
+      gesture.pointerId = e.pointerId;
+      startGesture(e.target, e.clientX, e.clientY);
+    }, active);
+    window.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) { gesture.locked = false; return; } // pinch-zoom is never blocked
+      gesture.touch = e.touches[0];
+      startGesture(e.target, e.touches[0].clientX, e.touches[0].clientY);
+    }, active);
+    window.addEventListener('touchmove', (e) => {
+      if (!gesture.locked) return;
+      if (e.cancelable) e.preventDefault(); // from the first pixel, before Safari starts a scroll
+      const t = e.touches[0];
+      if (t && vertical(t.clientX, t.clientY)) {
+        e.stopImmediatePropagation();
+        if (!gesture.logged) { gesture.logged = true; reelLog('stopped a swipe'); }
+      }
+    }, active);
+    window.addEventListener('pointermove', (e) => {
+      if (gesture.locked && e.pointerType === 'touch' && vertical(e.clientX, e.clientY)) e.stopImmediatePropagation();
+    }, active);
+    for (const type of ['touchend', 'pointerup']) {
+      window.addEventListener(type, (e) => {
+        if (type === 'pointerup' && e.pointerType !== 'touch') return;
+        if (!gesture.locked || gesture.axis !== 'y') return;
+        e.stopImmediatePropagation();
+        if (e.cancelable) e.preventDefault();
+        cancelForInstagram();
+      }, active);
+    }
+    window.addEventListener('wheel', (e) => {
+      if (lockApplies(e.target)) { e.preventDefault(); e.stopImmediatePropagation(); }
+    }, active);
+
+    // One reel per tap in Messages.
+    let firstReel = null; // { el, src } of the reel the pop-up opened with
+    let viewerSeenAt = 0;
+    const videoSrc = (v) => v.currentSrc || v.src || v.querySelector('source')?.src || '';
+    function checkViewer() {
+      if (!location.pathname.startsWith('/direct/') || player) { firstReel = null; return; }
+      const v = viewerVideo();
+      if (!v) {
+        if (firstReel && Date.now() - viewerSeenAt > 1500) { firstReel = null; reelLog('pop-up closed'); }
+        return;
+      }
+      viewerSeenAt = Date.now();
+      const src = videoSrc(v);
+      if (!settings.dmReels) return closeViewer('reels from Messages are switched off');
+      if (!firstReel) {
+        firstReel = { el: v, src };
+        reelLog(`pop-up opened (${v.paused ? 'paused' : 'playing'}, ${Math.round(v.getBoundingClientRect().height)}px tall)`);
+        return;
+      }
+      if (v === firstReel.el && !firstReel.src) { firstReel.src = src; return; }
+      if (v !== firstReel.el || (src && firstReel.src && src !== firstReel.src)) closeViewer('a second reel started');
+    }
+    function closeViewer(why) {
+      reelLog(`closed the pop-up: ${why}`);
+      for (const v of document.querySelectorAll('video:not(#cf-video)')) { v.muted = true; v.pause(); }
+      firstReel = null;
+      const nav = load(NAV_KEY, sessionStorage) || {};
+      location.replace(nav.direct || location.pathname);
+    }
+    document.addEventListener('playing', checkViewer, true);
+
     // Instagram's own video players stay silent and still while ours is open.
     document.addEventListener('play', (e) => {
       if (player && e.target !== player.querySelector('video')) { e.target.muted = true; e.target.pause(); }
@@ -439,6 +582,7 @@
       const route = routeFor(path, people());
       document.documentElement?.classList.toggle('cf-story', route === 'story');
       document.documentElement?.classList.toggle('cf-reel', !!player);
+      checkViewer();
       if (player) {
         if (!player.isConnected) (document.body || document.documentElement)?.appendChild(player); // also before the page has drawn
         for (const v of document.querySelectorAll('video:not(#cf-video)')) if (!v.paused) { v.muted = true; v.pause(); }
@@ -455,6 +599,7 @@
           // viewer with our player, which plays only that reel.
           const code = reelCode(path);
           const verdict = reelDecision(code, prev, nav.reel, settings.dmReels);
+          reelLog(`reel address ${path} from ${prev || 'nowhere'}: ${verdict}`);
           nav.reel = verdict === 'allow' ? code : '';
           save(NAV_KEY, nav, sessionStorage);
           if (verdict === 'back') return location.replace(nav.direct || '/direct/inbox/'); // no moving on to more reels
@@ -500,7 +645,8 @@
           mine.querySelector('.cap').textContent = reel.caption;
           v.play().catch(() => { v.muted = true; v.play().catch(() => {}); }); // iPhone may only allow silent autoplay; the sound button is in the controls
         })
-        .catch(() => {
+        .catch((err) => {
+          reelLog(`own player couldn't load ${code}: ${err.message}`);
           if (player !== mine) return;
           mine.querySelector('.stage').innerHTML = '<div class="msg">Instagram wouldn\'t load this reel here. It may be private or removed.</div>';
         });
@@ -943,7 +1089,11 @@
         </div>
         ${settings.onboarded ? `<div class="card"><b>Options</b>
           <label class="row" style="flex-wrap:nowrap"><input type="checkbox" id="cf-dmreels"${settings.dmReels ? ' checked' : ''}>
-            <span>Play reels people send me in Messages (just the one they sent, in a plain player)</span></label></div>
+            <span>Play reels people send me in Messages (just the one they sent; no swiping on to more)</span></label></div>
+          <details class="card"><summary>Reel check</summary>
+            <p class="status">If reels from Messages still misbehave: open a chat, tap the reel, try to swipe, then come back here, tap Copy and paste it to whoever is helping you.</p>
+            <pre style="white-space:pre-wrap;font-size:11px;max-height:14em;overflow:auto">${escapeHtml(reelLogText())}</pre>
+            <button type="button" data-act="copyreellog">Copy</button></details>
           <p class="end"><a href="#" data-act="home">Back to stories</a></p>` : ''}`;
     }
 
@@ -1097,6 +1247,9 @@
           input.click();
           break;
         }
+        case 'copyreellog':
+          navigator.clipboard?.writeText(reelLogText()).then(() => { b.textContent = 'Copied'; }, () => {});
+          break;
         case 'copyurl':
           navigator.clipboard?.writeText('x-safari-https://www.instagram.com').then(() => { b.textContent = 'Copied'; }, () => {});
           break;
