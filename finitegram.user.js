@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FiniteGram
 // @namespace    finity
-// @version      5.5.0
+// @version      5.6.0
 // @description  Replaces the instagram.com home feed with stories from lists you choose. No ads, reels or endless scrolling.
 // @match        https://www.instagram.com/*
 // @match        https://instagram.com/*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '5.5';
+  const VERSION = '5.6';
   const APP_NAME = 'FiniteGram'; // the name offered when adding to the home screen
   const SETTINGS_KEY = 'finity-close-friends';
   const STORIES_KEY = 'finity-cf-stories';
@@ -33,6 +33,30 @@
   const QUEUE_KEY = 'finity-cf-queue'; // the rest of the list's new stories, while you're watching
   const NAV_KEY = 'finity-cf-nav'; // the previous page, the last conversation, and the reel opened from it
   const REEL_LOG_KEY = 'finity-cf-reel-log'; // what happened around reels this visit, for "Reel check" in Setup & help
+  const NOTE_KEY = 'finity-cf-note'; // which reel heads-ups were shown this visit, and one waiting for after a reload
+  // Instagram sometimes plays one of its own reels instead of the one a friend sent, and FiniteGram
+  // can't always stop it. So it says so, cheerfully. One line is picked at random each time.
+  const NOTES = {
+    chat: [
+      "Heads up: reels in here are a bit of a gamble. Instagram sometimes swaps your friend's reel for one of its own.",
+      "Friendly warning: tap a reel and Instagram may hand you a stranger's. Not your friend's taste. Not your fault.",
+      'Reels from friends: usually. Reels from the algorithm wearing a friend costume: occasionally.',
+      "Tap a reel at your own risk. If it's not what you were sent, Instagram is freelancing again.",
+    ],
+    popup: [
+      "Is this the reel you were sent? If not, that's Instagram slipping one in. One and done.",
+      'Plot twist: this may not be your friend\'s reel. Watch it or don\'t, then back to the chat.',
+      "Don't recognise this? Instagram picked it, not your friend. FiniteGram is judging it quietly.",
+      'Reminder: swiping is switched off. Instagram can try, but this is the only reel you get.',
+    ],
+    blocked: [
+      'Nice try, Instagram. Back to your chat.',
+      "That's one reel. FiniteGram has spoken.",
+      'Instagram tried to sneak in another reel. Denied.',
+      'No second helpings. Back to the conversation.',
+    ],
+  };
+  const pick = (list) => list[Math.floor(Math.random() * list.length)];
   const VIEWER_MIN_HEIGHT = 0.7; // a video at least this share of the screen tall is a reel viewer, not a post
   const PULL_TRIGGER = 64; // how far to pull down (after damping) before letting go refreshes
   const PAGE_PAUSE_MS = 1500; // between pages of the following list
@@ -369,6 +393,12 @@
     #cf-player .stage { flex: 1; min-height: 0; display: grid; place-items: center; }
     #cf-player video { max-width: 100%; max-height: 100%; touch-action: manipulation; }
     #cf-player .msg { padding: 24px; text-align: center; color: #bbb; }
+    #cf-note { position: fixed; left: 12px; right: 12px; top: calc(env(safe-area-inset-top, 0px) + 10px); z-index: 2147483647;
+      display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 14px; background: rgba(20,20,20,.94); color: #fff;
+      font: 14px/1.4 -apple-system, system-ui, sans-serif; box-shadow: 0 6px 24px rgba(0,0,0,.35); transition: opacity .3s, transform .3s; }
+    #cf-note.gone { opacity: 0; transform: translateY(-12px); pointer-events: none; }
+    #cf-note b { font-size: 18px; line-height: 1; }
+    #cf-note span { flex: 1; }
     #cf-player .cap { padding: 8px 14px 14px; color: #ccc; font-size: 14px; max-height: 4.4em; overflow: hidden; }
     html.cf-story input, html.cf-story textarea, html.cf-story [contenteditable] { -webkit-user-select: text !important; user-select: text !important; }
     #cf { --bg: #fafafa; --card: #fff; --fg: #111; --muted: #6b6b6b; --line: #e3e3e3; --accent: #1f7a4d; --on-accent: #fff;
@@ -667,6 +697,37 @@
       if (lockApplies(e.target)) { e.preventDefault(); e.stopImmediatePropagation(); }
     }, active);
 
+    // A heads-up across the top that goes away by itself (or when tapped).
+    let noteTimer = 0;
+    function note(text, emoji = '🎲') {
+      const host = document.body || document.documentElement;
+      if (!host) return;
+      document.getElementById('cf-note')?.remove();
+      const el = document.createElement('div');
+      el.id = 'cf-note';
+      el.setAttribute('role', 'status');
+      el.innerHTML = '<b aria-hidden="true"></b><span></span>';
+      el.querySelector('b').textContent = emoji;
+      el.querySelector('span').textContent = text;
+      el.addEventListener('click', () => el.classList.add('gone'));
+      host.appendChild(el);
+      clearTimeout(noteTimer);
+      noteTimer = setTimeout(() => { el.classList.add('gone'); setTimeout(() => el.remove(), 400); }, 6000);
+    }
+    function notes() {
+      if (!settings.dmReels) return;
+      const state = load(NOTE_KEY, sessionStorage) || {};
+      if (state.pending && document.body) { // left over from just before the chat reloaded
+        note(state.pending, '🙅');
+        delete state.pending;
+        save(NOTE_KEY, state, sessionStorage);
+      } else if (!state.chat && document.body && location.pathname.startsWith('/direct/t/')) {
+        state.chat = true; // once a visit is plenty
+        save(NOTE_KEY, state, sessionStorage);
+        note(pick(NOTES.chat));
+      }
+    }
+
     // One reel per tap in Messages.
     let firstReel = null; // { el, src } of the reel the pop-up opened with
     let viewerSeenAt = 0;
@@ -683,6 +744,7 @@
       if (!settings.dmReels) return closeViewer('reels from Messages are switched off');
       if (!firstReel) {
         firstReel = { el: v, src };
+        note(pick(NOTES.popup), '👀');
         reelLog(`pop-up opened (${v.paused ? 'paused' : 'playing'}, ${Math.round(v.getBoundingClientRect().height)}px tall)`);
         return;
       }
@@ -691,6 +753,7 @@
     }
     function closeViewer(why) {
       reelLog(`closed the pop-up: ${why}`);
+      if (settings.dmReels) save(NOTE_KEY, { ...load(NOTE_KEY, sessionStorage), pending: pick(NOTES.blocked) }, sessionStorage);
       for (const v of document.querySelectorAll('video:not(#cf-video)')) { v.muted = true; v.pause(); }
       firstReel = null;
       const nav = load(NAV_KEY, sessionStorage) || {};
@@ -712,6 +775,7 @@
       document.documentElement?.classList.toggle('cf-reel', !!player);
       checkViewer();
       if (settings.dmReels && path.startsWith('/direct/t/')) loadChatReels();
+      notes();
       if (player) {
         if (!player.isConnected) (document.body || document.documentElement)?.appendChild(player); // also before the page has drawn
         for (const v of document.querySelectorAll('video:not(#cf-video)')) if (!v.paused) { v.muted = true; v.pause(); }
@@ -731,7 +795,10 @@
           reelLog(`reel address ${path} from ${prev || 'nowhere'}: ${verdict}`);
           nav.reel = verdict === 'allow' ? code : '';
           save(NAV_KEY, nav, sessionStorage);
-          if (verdict === 'back') return location.replace(nav.direct || '/direct/inbox/'); // no moving on to more reels
+          if (verdict === 'back') {
+            save(NOTE_KEY, { ...load(NOTE_KEY, sessionStorage), pending: pick(NOTES.blocked) }, sessionStorage);
+            return location.replace(nav.direct || '/direct/inbox/'); // no moving on to more reels
+          }
           if (verdict === 'block') return location.replace('/');
           if (player?.dataset.code !== code) openPlayer(code, true);
           return;
@@ -755,7 +822,8 @@
       player.dataset.code = code;
       player.dataset.page = onReelPage ? '1' : '';
       player.innerHTML = '<div class="top"><button type="button" class="back">‹ Back to chat</button><span class="who"></span></div>'
-        + '<div class="stage"><div class="msg">Loading the reel…</div></div><div class="cap"></div>';
+        + '<div class="stage"><div class="msg">Loading the reel…</div></div><div class="cap"></div>'
+        + '<div class="cap" style="color:#888;font-size:12px">One reel, no sequels. Not what you were sent? Blame Instagram, then tap Back.</div>';
       player.querySelector('.back').addEventListener('click', () => closePlayer(true));
       (document.body || document.documentElement)?.appendChild(player); // or on the next check, if the page isn't there yet
       document.documentElement?.classList.add('cf-reel');
@@ -1220,6 +1288,8 @@
         ${settings.onboarded ? `<div class="card"><b>Options</b>
           <label class="row" style="flex-wrap:nowrap"><input type="checkbox" id="cf-dmreels"${settings.dmReels ? ' checked' : ''}>
             <span>Play reels people send me in Messages (just the one they sent; no swiping on to more)</span></label></div>
+          <div class="card"><b>🎲 Known quirk: reels in Messages</b>
+            <p class="status">Sometimes Instagram plays one of its own reels instead of the one your friend sent. FiniteGram can't always stop the switch, but it does stop the swiping: you get one reel, then it's back to the chat. If a reel looks like it came from a stranger, it probably did. Tell your friend to just describe it.</p></div>
           <details class="card"><summary>Reel check</summary>
             <p class="status">If reels from Messages still misbehave: open a chat, tap the reel, try to swipe, then come back here, tap Copy and paste it to whoever is helping you.</p>
             <pre style="white-space:pre-wrap;font-size:11px;max-height:14em;overflow:auto">${escapeHtml(reelLogText())}</pre>
