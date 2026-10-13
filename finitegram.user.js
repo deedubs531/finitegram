@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FiniteGram
 // @namespace    finity
-// @version      5.2.0
+// @version      5.3.0
 // @description  Replaces the instagram.com home feed with stories from lists you choose. No ads, reels or endless scrolling.
 // @match        https://www.instagram.com/*
 // @match        https://instagram.com/*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '5.2';
+  const VERSION = '5.3';
   const APP_NAME = 'FiniteGram'; // the name offered when adding to the home screen
   const SETTINGS_KEY = 'finity-close-friends';
   const STORIES_KEY = 'finity-cf-stories';
@@ -129,6 +129,39 @@
    * A single reel: 'allow' it when it was opened from Messages (or is the one already allowed),
    * 'back' to the conversation when Instagram moves on to the next reel, otherwise 'block'.
    */
+  /** The reel code in a link or address (/reel/CODE/, /reels/CODE/), or ''. */
+  function reelCode(href) {
+    const m = String(href || '').match(/\/reels?\/([A-Za-z0-9_-]+)/);
+    return m ? m[1] : '';
+  }
+
+  /** Instagram's number for a post or reel, from the letters in its address. */
+  function mediaId(code) {
+    const abc = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    let id = 0n;
+    for (const c of String(code).slice(0, 11)) {
+      const i = abc.indexOf(c);
+      if (i < 0) return '';
+      id = id * 64n + BigInt(i);
+    }
+    return code ? id.toString() : '';
+  }
+
+  /** The video (and who posted it) from Instagram's answer about one post. */
+  function reelVideo(json) {
+    const item = json?.items?.[0];
+    if (!item) return null;
+    const media = item.video_versions ? item : (item.carousel_media || []).find((m) => m?.video_versions);
+    const url = media?.video_versions?.[0]?.url;
+    if (!url) return null;
+    return {
+      url,
+      poster: media.image_versions2?.candidates?.[0]?.url || '',
+      user: item.user?.username || '',
+      caption: item.caption?.text || '',
+    };
+  }
+
   function reelDecision(code, prevPath, allowedCode, enabled) {
     if (!enabled) return 'block';
     if (code && code === allowedCode) return 'allow';
@@ -261,7 +294,19 @@
        the press-and-hold that pauses a story, and taps that skip ahead. */
     html.cf-story, html.cf-story * { -webkit-touch-callout: none !important; -webkit-user-select: none !important; user-select: none !important; }
     html.cf-story img, html.cf-story video { pointer-events: none !important; }
+    /* Our own player for a reel sent in Messages: one video, nothing under it to scroll to. */
     html.cf-reel, html.cf-reel body { overflow: hidden !important; overscroll-behavior: none !important; }
+    html.cf-reel video:not(#cf-video) { visibility: hidden !important; }
+    #cf-player { position: fixed; inset: 0; z-index: 2147483647; background: #000; color: #fff; display: flex; flex-direction: column;
+      font: 15px/1.4 -apple-system, system-ui, sans-serif; touch-action: none; overscroll-behavior: none;
+      padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px); }
+    #cf-player .top { display: flex; align-items: center; gap: 12px; padding: 10px 14px; }
+    #cf-player button { font: inherit; color: #fff; background: rgba(255,255,255,.14); border: 0; border-radius: 18px; padding: 8px 14px; }
+    #cf-player .who { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #cf-player .stage { flex: 1; min-height: 0; display: grid; place-items: center; }
+    #cf-player video { max-width: 100%; max-height: 100%; touch-action: manipulation; }
+    #cf-player .msg { padding: 24px; text-align: center; color: #bbb; }
+    #cf-player .cap { padding: 8px 14px 14px; color: #ccc; font-size: 14px; max-height: 4.4em; overflow: hidden; }
     html.cf-story input, html.cf-story textarea, html.cf-story [contenteditable] { -webkit-user-select: text !important; user-select: text !important; }
     #cf { --bg: #fafafa; --card: #fff; --fg: #111; --muted: #6b6b6b; --line: #e3e3e3; --accent: #1f7a4d; --on-accent: #fff;
       position: fixed; inset: 0; z-index: 2147483646; overflow-y: auto; -webkit-overflow-scrolling: touch;
@@ -370,23 +415,34 @@
     // userscripts may run walled off from the page and never hear about it. This also puts our
     // page, styles and home-screen icon back if Instagram's own code removes them.
     let lastPath = null;
-    let reelLocked = false; // watching a reel sent in Messages inside Instagram's reel viewer
+    let player = null; // our player for a reel sent in Messages, while it's open
 
-    // In the reel viewer, swiping up or down moves on to suggested reels: stop the swipe there.
-    // Taps still work (pause, sound); Back goes to the chat.
-    let swipeY = 0;
-    document.addEventListener('touchstart', (e) => { swipeY = e.touches[0]?.clientY || 0; }, { capture: true, passive: true });
-    document.addEventListener('touchmove', (e) => {
-      if (reelLocked && Math.abs((e.touches[0]?.clientY || 0) - swipeY) > 4) e.preventDefault();
-    }, { capture: true, passive: false });
-    document.addEventListener('wheel', (e) => { if (reelLocked) e.preventDefault(); }, { capture: true, passive: false });
+    // Instagram's reel viewer always lines up suggested reels after the one you were sent, so a
+    // sent reel never opens there: tapping it in a chat opens our own player with just that video.
+    document.addEventListener('click', (e) => {
+      if (!location.pathname.startsWith('/direct/') || !settings.dmReels || e.target.closest?.('#cf-player')) return;
+      const link = e.target.closest?.('a[href]');
+      const code = link && reelCode(link.getAttribute('href'));
+      if (!code) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      openPlayer(code, false);
+    }, true);
+    // Instagram's own video players stay silent and still while ours is open.
+    document.addEventListener('play', (e) => {
+      if (player && e.target !== player.querySelector('video')) { e.target.muted = true; e.target.pause(); }
+    }, true);
 
     function tick() {
       addHead();
       const path = location.pathname;
       const route = routeFor(path, people());
       document.documentElement?.classList.toggle('cf-story', route === 'story');
-      document.documentElement?.classList.toggle('cf-reel', route === 'reel' && reelLocked);
+      document.documentElement?.classList.toggle('cf-reel', !!player);
+      if (player) {
+        if (!player.isConnected) (document.body || document.documentElement)?.appendChild(player); // also before the page has drawn
+        for (const v of document.querySelectorAll('video:not(#cf-video)')) if (!v.paused) { v.muted = true; v.pause(); }
+      }
       if (path !== lastPath) {
         lastPath = path;
         // Remembered across page loads: where you just were, and your last conversation.
@@ -394,34 +450,71 @@
         const prev = nav.path;
         nav.path = path;
         if (path.startsWith('/direct/')) nav.direct = path;
-        reelLocked = false;
         if (route === 'reel') {
-          const code = path.split('/')[2] || '';
+          // Opened a reel's address from a chat without our tap catching it: cover Instagram's
+          // viewer with our player, which plays only that reel.
+          const code = reelCode(path);
           const verdict = reelDecision(code, prev, nav.reel, settings.dmReels);
           nav.reel = verdict === 'allow' ? code : '';
-          const triedAt = (nav.asPost && nav.asPost[code]) || 0;
-          if (verdict === 'allow' && Date.now() - triedAt > 10000) {
-            // Open it as a plain post instead: just that video, without Instagram's feed of
-            // suggested reels underneath. If Instagram sends it straight back, don't loop.
-            nav.asPost = { [code]: Date.now() };
-            save(NAV_KEY, nav, sessionStorage);
-            return location.replace(`/p/${encodeURIComponent(code)}/`);
-          }
           save(NAV_KEY, nav, sessionStorage);
-          if (verdict === 'back') return location.replace(nav.direct || '/direct/inbox/'); // no scrolling on to more reels
+          if (verdict === 'back') return location.replace(nav.direct || '/direct/inbox/'); // no moving on to more reels
           if (verdict === 'block') return location.replace('/');
-          reelLocked = true; // still in Instagram's reel viewer: no swiping on to suggested reels
+          if (player?.dataset.code !== code) openPlayer(code, true);
           return;
         }
-        // The post version of an allowed reel keeps the permission, in case Instagram redirects it back.
-        if (!(nav.reel && path.startsWith(`/p/${nav.reel}`))) nav.reel = '';
+        nav.reel = '';
         save(NAV_KEY, nav, sessionStorage);
+        if (player) closePlayer(false);
         if (route === 'block') return location.replace(path.startsWith('/stories/') ? nextStory(path) : '/');
         if (route === 'to-search') return location.replace('/explore/search/');
         if (route === 'story') takeFromQueue(path);
       }
       if (route === 'home' && !needsLogin && !loginShowing()) show();
       else hide();
+    }
+
+    // One video, a way back, and nothing else.
+    function openPlayer(code, onReelPage) {
+      if (player) player.remove();
+      player = document.createElement('div');
+      player.id = 'cf-player';
+      player.dataset.code = code;
+      player.dataset.page = onReelPage ? '1' : '';
+      player.innerHTML = '<div class="top"><button type="button" class="back">‹ Back to chat</button><span class="who"></span></div>'
+        + '<div class="stage"><div class="msg">Loading the reel…</div></div><div class="cap"></div>';
+      player.querySelector('.back').addEventListener('click', () => closePlayer(true));
+      (document.body || document.documentElement)?.appendChild(player); // or on the next check, if the page isn't there yet
+      document.documentElement?.classList.add('cf-reel');
+      for (const v of document.querySelectorAll('video')) { v.muted = true; v.pause(); }
+      const mine = player;
+      const id = mediaId(code);
+      (id ? igGet(`/api/v1/media/${id}/info/`) : Promise.reject(new Error('no code')))
+        .then((json) => {
+          if (player !== mine) return;
+          const reel = reelVideo(json);
+          if (!reel) throw new Error('no video');
+          const v = Object.assign(document.createElement('video'), { id: 'cf-video', src: reel.url, poster: reel.poster, controls: true, loop: true, playsInline: true });
+          v.setAttribute('playsinline', '');
+          mine.querySelector('.stage').replaceChildren(v);
+          mine.querySelector('.who').textContent = reel.user ? '@' + reel.user : '';
+          mine.querySelector('.cap').textContent = reel.caption;
+          v.play().catch(() => { v.muted = true; v.play().catch(() => {}); }); // iPhone may only allow silent autoplay; the sound button is in the controls
+        })
+        .catch(() => {
+          if (player !== mine) return;
+          mine.querySelector('.stage').innerHTML = '<div class="msg">Instagram wouldn\'t load this reel here. It may be private or removed.</div>';
+        });
+    }
+
+    function closePlayer(goBack) {
+      const onReelPage = player?.dataset.page;
+      player?.remove();
+      player = null;
+      document.documentElement?.classList.remove('cf-reel');
+      if (goBack && onReelPage) {
+        const nav = load(NAV_KEY, sessionStorage) || {};
+        location.replace(nav.direct || '/direct/inbox/');
+      }
     }
 
     // Watching stories: when Instagram moves on to someone who isn't on the list, go to the next
@@ -850,7 +943,7 @@
         </div>
         ${settings.onboarded ? `<div class="card"><b>Options</b>
           <label class="row" style="flex-wrap:nowrap"><input type="checkbox" id="cf-dmreels"${settings.dmReels ? ' checked' : ''}>
-            <span>Play reels people send me in Messages (one at a time; swiping on goes back to the chat)</span></label></div>
+            <span>Play reels people send me in Messages (just the one they sent, in a plain player)</span></label></div>
           <p class="end"><a href="#" data-act="home">Back to stories</a></p>` : ''}`;
     }
 
@@ -1032,7 +1125,7 @@
     setInterval(tick, 400);
   }
 
-  const api = { reelDecision, normalizeName, namesFromText, readSettings, shortLabel, newListId, routeFor, storyGroups, usersFromPage, sortRows, followingSummary };
+  const api = { reelDecision, reelCode, mediaId, reelVideo, normalizeName, namesFromText, readSettings, shortLabel, newListId, routeFor, storyGroups, usersFromPage, sortRows, followingSummary };
   if (typeof window !== 'undefined' && window.__FINITY_CF_TEST__) window.__FINITY_CF_TEST__ = api;
   else start();
 })();
