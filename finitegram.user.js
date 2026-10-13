@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FiniteGram
 // @namespace    finity
-// @version      5.1.0
+// @version      5.2.0
 // @description  Replaces the instagram.com home feed with stories from lists you choose. No ads, reels or endless scrolling.
 // @match        https://www.instagram.com/*
 // @match        https://instagram.com/*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '5.1';
+  const VERSION = '5.2';
   const APP_NAME = 'FiniteGram'; // the name offered when adding to the home screen
   const SETTINGS_KEY = 'finity-close-friends';
   const STORIES_KEY = 'finity-cf-stories';
@@ -261,6 +261,7 @@
        the press-and-hold that pauses a story, and taps that skip ahead. */
     html.cf-story, html.cf-story * { -webkit-touch-callout: none !important; -webkit-user-select: none !important; user-select: none !important; }
     html.cf-story img, html.cf-story video { pointer-events: none !important; }
+    html.cf-reel, html.cf-reel body { overflow: hidden !important; overscroll-behavior: none !important; }
     html.cf-story input, html.cf-story textarea, html.cf-story [contenteditable] { -webkit-user-select: text !important; user-select: text !important; }
     #cf { --bg: #fafafa; --card: #fff; --fg: #111; --muted: #6b6b6b; --line: #e3e3e3; --accent: #1f7a4d; --on-accent: #fff;
       position: fixed; inset: 0; z-index: 2147483646; overflow-y: auto; -webkit-overflow-scrolling: touch;
@@ -369,11 +370,23 @@
     // userscripts may run walled off from the page and never hear about it. This also puts our
     // page, styles and home-screen icon back if Instagram's own code removes them.
     let lastPath = null;
+    let reelLocked = false; // watching a reel sent in Messages inside Instagram's reel viewer
+
+    // In the reel viewer, swiping up or down moves on to suggested reels: stop the swipe there.
+    // Taps still work (pause, sound); Back goes to the chat.
+    let swipeY = 0;
+    document.addEventListener('touchstart', (e) => { swipeY = e.touches[0]?.clientY || 0; }, { capture: true, passive: true });
+    document.addEventListener('touchmove', (e) => {
+      if (reelLocked && Math.abs((e.touches[0]?.clientY || 0) - swipeY) > 4) e.preventDefault();
+    }, { capture: true, passive: false });
+    document.addEventListener('wheel', (e) => { if (reelLocked) e.preventDefault(); }, { capture: true, passive: false });
+
     function tick() {
       addHead();
       const path = location.pathname;
       const route = routeFor(path, people());
       document.documentElement?.classList.toggle('cf-story', route === 'story');
+      document.documentElement?.classList.toggle('cf-reel', route === 'reel' && reelLocked);
       if (path !== lastPath) {
         lastPath = path;
         // Remembered across page loads: where you just were, and your last conversation.
@@ -381,16 +394,27 @@
         const prev = nav.path;
         nav.path = path;
         if (path.startsWith('/direct/')) nav.direct = path;
+        reelLocked = false;
         if (route === 'reel') {
           const code = path.split('/')[2] || '';
           const verdict = reelDecision(code, prev, nav.reel, settings.dmReels);
           nav.reel = verdict === 'allow' ? code : '';
+          const triedAt = (nav.asPost && nav.asPost[code]) || 0;
+          if (verdict === 'allow' && Date.now() - triedAt > 10000) {
+            // Open it as a plain post instead: just that video, without Instagram's feed of
+            // suggested reels underneath. If Instagram sends it straight back, don't loop.
+            nav.asPost = { [code]: Date.now() };
+            save(NAV_KEY, nav, sessionStorage);
+            return location.replace(`/p/${encodeURIComponent(code)}/`);
+          }
           save(NAV_KEY, nav, sessionStorage);
           if (verdict === 'back') return location.replace(nav.direct || '/direct/inbox/'); // no scrolling on to more reels
           if (verdict === 'block') return location.replace('/');
+          reelLocked = true; // still in Instagram's reel viewer: no swiping on to suggested reels
           return;
         }
-        nav.reel = '';
+        // The post version of an allowed reel keeps the permission, in case Instagram redirects it back.
+        if (!(nav.reel && path.startsWith(`/p/${nav.reel}`))) nav.reel = '';
         save(NAV_KEY, nav, sessionStorage);
         if (route === 'block') return location.replace(path.startsWith('/stories/') ? nextStory(path) : '/');
         if (route === 'to-search') return location.replace('/explore/search/');
