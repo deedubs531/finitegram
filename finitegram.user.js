@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FiniteGram
 // @namespace    finity
-// @version      5.4.0
+// @version      5.5.0
 // @description  Replaces the instagram.com home feed with stories from lists you choose. No ads, reels or endless scrolling.
 // @match        https://www.instagram.com/*
 // @match        https://instagram.com/*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '5.4';
+  const VERSION = '5.5';
   const APP_NAME = 'FiniteGram'; // the name offered when adding to the home screen
   const SETTINGS_KEY = 'finity-close-friends';
   const STORIES_KEY = 'finity-cf-stories';
@@ -162,6 +162,55 @@
       user: item.user?.username || '',
       caption: item.caption?.text || '',
     };
+  }
+
+  /** The file name of a picture on Instagram's servers: the same for every size of one picture. */
+  function imageKey(url) {
+    const m = String(url || '').split('?')[0].match(/\/([^/]+\.(?:jpe?g|webp|png|heic))$/i);
+    return m ? m[1] : '';
+  }
+
+  /**
+   * The reels in a chat, from Instagram's answer about its messages: for each message that shares
+   * exactly one reel, its pictures (so a tap on its preview can be recognised) and, when given,
+   * its video.
+   */
+  function reelsInMessages(items) {
+    const byImage = {};
+    const videos = {};
+    for (const item of Array.isArray(items) ? items : []) {
+      const codes = new Set();
+      const images = [];
+      const walk = (x, depth) => {
+        if (depth > 9 || x == null) return;
+        if (typeof x === 'string') {
+          const code = /instagram\.com\/reels?\/[A-Za-z0-9_-]+/.test(x) && reelCode(x);
+          if (code) codes.add(code);
+          if (imageKey(x)) images.push(imageKey(x));
+          return;
+        }
+        if (typeof x !== 'object') return;
+        if (typeof x.code === 'string' && (x.video_versions || x.product_type === 'clips' || x.media_type === 2)) {
+          codes.add(x.code);
+          const video = x.video_versions && reelVideo({ items: [x] });
+          if (video) videos[x.code] = video;
+        }
+        for (const v of Array.isArray(x) ? x : Object.values(x)) walk(v, depth + 1);
+      };
+      walk(item, 0);
+      if (codes.size !== 1) continue; // nothing shared, or too many to tell apart
+      const [code] = codes;
+      for (const key of images) byImage[key] = code;
+    }
+    return { byImage, videos };
+  }
+
+  /** The messages of chat `id` (as in /direct/t/<id>/) from Instagram's inbox or thread answer. */
+  function threadItems(json, id) {
+    if (Array.isArray(json?.thread?.items)) return json.thread.items;
+    const threads = json?.inbox?.threads || [];
+    const t = threads.find((x) => [x?.thread_id, x?.thread_v2_id, x?.thread_igid].map(String).includes(String(id)));
+    return t?.items || [];
   }
 
   function reelDecision(code, prevPath, allowedCode, enabled) {
@@ -433,12 +482,85 @@
 
     // Instagram's reel viewer always lines up suggested reels after the one you were sent, so a
     // sent reel never opens there: tapping it in a chat opens our own player with just that video.
-    document.addEventListener('click', (e) => {
-      if (!location.pathname.startsWith('/direct/') || !settings.dmReels || e.target.closest?.('#cf-player')) return;
-      const link = e.target.closest?.('a[href]');
+    // Which reel a tap in a chat is on: a reel link, or a picture we know from the chat's messages.
+    let chatReels = { id: '', at: 0, loading: false, byImage: {}, videos: {}, count: 0 };
+    function loadChatReels() {
+      const id = (location.pathname.match(/^\/direct\/t\/([^/]+)/) || [])[1] || '';
+      if (!id || chatReels.loading || (chatReels.id === id && Date.now() - chatReels.at < 45000)) return;
+      if (chatReels.id !== id) chatReels = { id, at: 0, loading: false, byImage: {}, videos: {}, count: 0 };
+      chatReels.loading = true;
+      const add = (items) => {
+        const found = reelsInMessages(items);
+        Object.assign(chatReels.byImage, found.byImage);
+        Object.assign(chatReels.videos, found.videos);
+        return items.length;
+      };
+      igGet(`/api/v1/direct_v2/threads/${encodeURIComponent(id)}/?limit=40`)
+        .then((json) => add(threadItems(json, id)))
+        .catch(() => 0)
+        .then(async (n) => n || add(threadItems(await igGet('/api/v1/direct_v2/inbox/?limit=30&thread_message_limit=40'), id)))
+        .then((n) => {
+          const count = new Set(Object.values(chatReels.byImage)).size;
+          if (count !== chatReels.count || !chatReels.at) reelLog(`chat read: ${n} messages, ${count} reels`);
+          chatReels.count = count;
+        })
+        .catch((err) => reelLog(`couldn't read the chat: ${err.message}`))
+        .finally(() => { chatReels.at = Date.now(); chatReels.loading = false; });
+    }
+    function reelAt(target) {
+      const link = target.closest?.('a[href]');
       const code = link && reelCode(link.getAttribute('href'));
+      if (code) return code;
+      // Climb from the tapped spot to the nearest picture (the preview, or what covers it). Only
+      // that bubble's pictures count, never the neighbours'.
+      for (let el = target, i = 0; el && el !== document.body && i < 8; el = el.parentElement, i++) {
+        const pics = el.querySelectorAll ? [...el.querySelectorAll('img, video[poster]')] : [];
+        if (el.tagName === 'IMG' || el.tagName === 'VIDEO') pics.unshift(el);
+        const bg = el.style?.backgroundImage && chatReels.byImage[imageKey(el.style.backgroundImage.replace(/^url\(["']?|["']?\)$/g, ''))];
+        if (bg) return bg;
+        if (!pics.length) continue;
+        for (const pic of pics) {
+          for (const url of [pic.currentSrc, pic.src, pic.poster, ...(pic.srcset || '').split(',').map((x) => x.trim().split(' ')[0])]) {
+            const hit = chatReels.byImage[imageKey(url)];
+            if (hit) return hit;
+          }
+        }
+        return ''; // the nearest pictures aren't a reel
+      }
+      return '';
+    }
+    // Catch the whole tap (Instagram may act on finger-down or finger-up, not just the click).
+    let tapCode = '';
+    let tapTimer = 0;
+    let tapFrom = { x: 0, y: 0 };
+    const inChat = (e) => location.pathname.startsWith('/direct/') && settings.dmReels && !e.target.closest?.('#cf-player, #cf');
+    for (const type of ['touchstart', 'pointerdown', 'mousedown']) {
+      window.addEventListener(type, (e) => {
+        if (type !== 'mousedown') tapCode = '';
+        if (!inChat(e)) return;
+        if (type === 'touchstart' || type === 'pointerdown' || !tapCode) tapCode = reelAt(e.target);
+        if (type === 'touchstart') tapFrom = { x: e.touches[0]?.clientX || 0, y: e.touches[0]?.clientY || 0 };
+        if (tapCode) e.stopImmediatePropagation();
+      }, true);
+    }
+    for (const type of ['pointerup', 'mouseup', 'touchend']) {
+      window.addEventListener(type, (e) => {
+        if (!tapCode || !inChat(e)) return;
+        e.stopImmediatePropagation();
+        const t = e.changedTouches?.[0];
+        if (type === 'touchend' && t && Math.hypot(t.clientX - tapFrom.x, t.clientY - tapFrom.y) < 10) { // a tap, not a scroll: open even if no click follows
+          clearTimeout(tapTimer);
+          const code = tapCode;
+          tapTimer = setTimeout(() => { if (!player) { reelLog(`tap on sent reel ${code}: own player`); openPlayer(code, false); } }, 400);
+        }
+      }, true);
+    }
+    document.addEventListener('click', (e) => {
+      if (!inChat(e)) return;
+      const code = reelAt(e.target) || tapCode;
       if (!code) {
         const el = e.target;
+        const link = el.closest?.('a[href]');
         reelLog(`tap in chat on <${el.tagName?.toLowerCase()}${el.getAttribute?.('role') ? ' role=' + el.getAttribute('role') : ''}>${link ? ' in link ' + link.getAttribute('href') : ''}`);
         setTimeout(() => { // what's on screen just after: every video, how big, and where it sits
           const vids = [...document.querySelectorAll('video:not(#cf-video)')].map((v) => {
@@ -449,9 +571,12 @@
         }, 1500);
         return;
       }
-      reelLog(`tap on sent reel ${code}: own player`);
       e.preventDefault();
       e.stopImmediatePropagation();
+      clearTimeout(tapTimer);
+      tapCode = '';
+      if (player?.dataset.code === code) return;
+      reelLog(`tap on sent reel ${code}: own player`);
       openPlayer(code, false);
     }, true);
     // In a chat, Instagram opens a sent reel in a pop-up over the conversation without changing the
@@ -460,11 +585,13 @@
     //    the very first movement, and Instagram's own swipe code never hears about them.
     // 2. In Messages, once a pop-up has shown one reel, a different one starting closes it.
     function viewerVideo() {
-      const min = window.innerHeight * VIEWER_MIN_HEIGHT;
+      const inChat = location.pathname.startsWith('/direct/');
       for (const v of document.querySelectorAll('video')) {
-        if (v.id === 'cf-video' || v.closest('article')) continue;
+        if (v.id === 'cf-video' || (!inChat && v.closest('article'))) continue;
         const r = v.getBoundingClientRect();
-        if (r.height >= min && r.bottom > 0 && r.top < window.innerHeight) return v;
+        if (r.bottom <= 0 || r.top >= window.innerHeight || !r.height) continue;
+        // Full-screen anywhere; in a chat, also any video playing at a third of the screen or more.
+        if (r.height >= window.innerHeight * VIEWER_MIN_HEIGHT || (inChat && !v.paused && r.height >= window.innerHeight / 3)) return v;
       }
       return null;
     }
@@ -570,6 +697,7 @@
       location.replace(nav.direct || location.pathname);
     }
     document.addEventListener('playing', checkViewer, true);
+    document.addEventListener('play', () => setTimeout(checkViewer, 50), true);
 
     // Instagram's own video players stay silent and still while ours is open.
     document.addEventListener('play', (e) => {
@@ -583,6 +711,7 @@
       document.documentElement?.classList.toggle('cf-story', route === 'story');
       document.documentElement?.classList.toggle('cf-reel', !!player);
       checkViewer();
+      if (settings.dmReels && path.startsWith('/direct/t/')) loadChatReels();
       if (player) {
         if (!player.isConnected) (document.body || document.documentElement)?.appendChild(player); // also before the page has drawn
         for (const v of document.querySelectorAll('video:not(#cf-video)')) if (!v.paused) { v.muted = true; v.pause(); }
@@ -633,10 +762,11 @@
       for (const v of document.querySelectorAll('video')) { v.muted = true; v.pause(); }
       const mine = player;
       const id = mediaId(code);
-      (id ? igGet(`/api/v1/media/${id}/info/`) : Promise.reject(new Error('no code')))
+      const known = chatReels.videos[code];
+      (known ? Promise.resolve(null) : id ? igGet(`/api/v1/media/${id}/info/`) : Promise.reject(new Error('no code')))
         .then((json) => {
           if (player !== mine) return;
-          const reel = reelVideo(json);
+          const reel = known || reelVideo(json);
           if (!reel) throw new Error('no video');
           const v = Object.assign(document.createElement('video'), { id: 'cf-video', src: reel.url, poster: reel.poster, controls: true, loop: true, playsInline: true });
           v.setAttribute('playsinline', '');
@@ -962,7 +1092,7 @@
         <h2>Stories · ${escapeHtml(listName())}</h2>
         ${body}
         <p class="end">${stories.at ? `Updated ${ago(stories.at)} · pull down to refresh` : 'Pull down to refresh'}<br>
-          Finity ${VERSION} · <a href="#" data-act="setup">Setup & help</a></p>`;
+          ${APP_NAME} ${VERSION} · <a href="#" data-act="setup">Setup & help</a></p>`;
     }
 
     function ago(t) {
@@ -1278,7 +1408,7 @@
     setInterval(tick, 400);
   }
 
-  const api = { reelDecision, reelCode, mediaId, reelVideo, normalizeName, namesFromText, readSettings, shortLabel, newListId, routeFor, storyGroups, usersFromPage, sortRows, followingSummary };
+  const api = { reelDecision, reelCode, mediaId, reelVideo, imageKey, reelsInMessages, threadItems, normalizeName, namesFromText, readSettings, shortLabel, newListId, routeFor, storyGroups, usersFromPage, sortRows, followingSummary };
   if (typeof window !== 'undefined' && window.__FINITY_CF_TEST__) window.__FINITY_CF_TEST__ = api;
   else start();
 })();
