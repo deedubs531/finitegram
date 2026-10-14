@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FiniteGram
 // @namespace    finity
-// @version      6.0.0
+// @version      6.1.0
 // @description  Replaces the instagram.com home feed with stories from lists you choose. No ads, reels or endless scrolling.
 // @match        https://www.instagram.com/*
 // @match        https://instagram.com/*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '6.0';
+  const VERSION = '6.1';
   const APP_NAME = 'FiniteGram'; // the name offered when adding to the home screen
   const SETTINGS_KEY = 'finity-close-friends';
   const STORIES_KEY = 'finity-cf-stories';
@@ -222,6 +222,29 @@
    * already in a list, matching the search and filter: '' everyone, 'none' not in a list, a list id,
    * or 'acct:<id>' for the accounts one of your accounts follows.
    */
+  /**
+   * Add the newest page of one account's follows to what's already loaded: anyone not there yet
+   * goes to the top and is remembered as new (with when), and everyone's name and picture is
+   * brought up to date. Instagram lists the most recent follows first.
+   */
+  function mergeNewFollows(acct, pageUsers, now) {
+    const users = [...(acct?.users || [])];
+    const index = new Map(users.map((u, i) => [u[0], i]));
+    const added = [];
+    for (const u of pageUsers || []) {
+      if (index.has(u[0])) {
+        const i = index.get(u[0]);
+        users[i] = [u[0], u[1] || users[i][1] || '', u[2] || users[i][2] || ''];
+      } else {
+        added.push(u);
+        index.set(u[0], -1);
+      }
+    }
+    const newAt = { ...(acct?.newAt || {}) };
+    for (const [n] of added) newAt[n] = now;
+    return { acct: { ...acct, users: [...added, ...users], newAt, checked: now }, added: added.map(([n]) => n) };
+  }
+
   function sortRows(followingByAccount, lists, query = '', filter = '') {
     const names = new Map(); // username → { full, pic }, filled from whichever account knows the most
     for (const acct of Object.values(followingByAccount || {})) {
@@ -231,13 +254,15 @@
       }
     }
     const fromAcct = filter.startsWith('acct:') ? new Set((followingByAccount?.[filter.slice(5)]?.users || []).map(([n]) => n)) : null;
+    const newAt = {}; // followed recently: when FiniteGram first noticed
+    for (const acct of Object.values(followingByAccount || {})) for (const [n, t] of Object.entries(acct.newAt || {})) newAt[n] = Math.max(newAt[n] || 0, t);
     for (const members of Object.values(lists)) for (const n of members) if (!names.has(n)) names.set(n, { full: '', pic: '' });
     const q = normalizeName(query);
     const inAny = (n) => Object.values(lists).some((m) => m.includes(n));
     return [...names]
       .filter(([n, { full }]) => !q || n.includes(q) || full.toLowerCase().includes(q))
-      .filter(([n]) => (fromAcct ? fromAcct.has(n) : filter === 'none' ? !inAny(n) : filter ? lists[filter]?.includes(n) : true))
-      .sort(([a], [b]) => a.localeCompare(b))
+      .filter(([n]) => (fromAcct ? fromAcct.has(n) : filter === 'none' ? !inAny(n) : filter === 'new' ? newAt[n] && !inAny(n) : filter ? lists[filter]?.includes(n) : true))
+      .sort(([a], [b]) => (filter === 'new' && newAt[b] - newAt[a]) || a.localeCompare(b)) // newest first, then A to Z
       .map(([name, { full, pic }]) => ({ name, full, pic }));
   }
 
@@ -398,6 +423,7 @@
     #cf .donebar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1; display: flex; justify-content: center;
       padding: 10px 16px calc(env(safe-area-inset-bottom, 0px) + 8px); background: linear-gradient(transparent, var(--bg) 30%); }
     #cf .donebar button { min-width: 60%; padding: 11px 20px; font-size: 16px; }
+    #cf .newfollows { display: inline-block; padding: 7px 12px; border-radius: 16px; background: var(--card); border: 1px solid var(--line); color: inherit; text-decoration: none; font-size: 14px; }
     #cf .end { text-align: center; color: var(--muted); padding: 12px 0; font-size: 13px; }
     #cf .end a { color: inherit; }
   `;
@@ -643,6 +669,7 @@
         if (stories.tray) refreshUnread();
         else refreshStories();
         checkAccount();
+        checkNewFollows();
       }
     }
 
@@ -704,6 +731,7 @@
     // Stories: one request for who has a story up, plus the unread-messages count.
     async function refreshStories() {
       if (loading) return;
+      checkNewFollows();
       loading = true;
       problem = '';
       render();
@@ -764,6 +792,26 @@
       render();
     }
 
+    // New follows: one quick look at the newest page of the logged-in account's follows, at most
+    // every few minutes. Anyone new lands under "New follows to sort".
+    let followsCheckedAt = 0;
+    async function checkNewFollows() {
+      const id = cookie('ds_user_id') || me?.id;
+      if (!id || !following[id] || fetching || Date.now() - followsCheckedAt < 5 * 60000) return;
+      followsCheckedAt = Date.now();
+      try {
+        const page = usersFromPage(await igGet(`/api/v1/friendships/${id}/following/?count=200`));
+        if (!page.length) return;
+        const { acct, added } = mergeNewFollows(following[id], page, Date.now());
+        following[id] = acct;
+        save(FOLLOWING_KEY, following);
+        if (added.length) render();
+      } catch {
+        // Try again next time.
+      }
+    }
+    const newToSort = () => sortRows(following, settings.lists, '', 'new').length;
+
     // The accounts the logged-in account follows: a page of 200 at a time, with a pause between,
     // then a check against how many Instagram says it follows.
     async function loadFollowing() {
@@ -801,7 +849,10 @@
           // Can't double-check the count; that's fine.
         }
         const unique = [...new Map(users.map((u) => [u[0], u])).values()];
-        following[id] = { at: Date.now(), users: unique, name: name || following[id]?.name || '', expected };
+        const had = following[id];
+        const newAt = { ...(had?.newAt || {}) };
+        if (had) for (const [n] of unique) if (!had.users.some((u) => u[0] === n)) newAt[n] = Date.now(); // followed since the last load
+        following[id] = { at: Date.now(), checked: Date.now(), users: unique, name: name || had?.name || '', expected, newAt };
         save(FOLLOWING_KEY, following);
         if (name) {
           me = { id, name };
@@ -887,6 +938,7 @@
       return `<div class="lists" id="cf-lists">${listButtons()}</div>
         ${problem ? `<p class="status error" role="alert">${escapeHtml(problem)}</p>` : ''}
         ${wrongAccount ? `<p class="status error" role="alert">You're logged in as @${escapeHtml(me.name)}, so these are the stories that account follows. Switch to @${escapeHtml(settings.mainAccount)} on Instagram to see yours.</p>` : ''}
+        ${newToSort() ? `<p><a href="#" class="newfollows" data-act="sortnew">✨ ${newToSort()} new ${newToSort() === 1 ? 'follow' : 'follows'} to sort ›</a></p>` : ''}
         <h2>Stories · ${escapeHtml(listName())}</h2>
         ${body}
         <p class="end">${stories.at ? `Updated ${ago(stories.at)} · pull down to refresh` : 'Pull down to refresh'}<br>
@@ -916,13 +968,14 @@
       return `<div class="lists" id="cf-lists">${listButtons()}</div>
         <h1>Sort accounts</h1>
         <p class="status">Tap a list next to someone to add them; tags save as you go. Tap a photo or name to see who it is.</p>
-        <div class="row"><button type="button" data-act="following"${fetching ? ' disabled' : ''}>Load accounts I follow</button></div>
-        <p class="status">This loads the account you're logged into now. Have another account? Switch to it on Instagram, come back, and tap Load again: both are combined here.</p>
+        <div class="row"><button type="button" data-act="following"${fetching ? ' disabled' : ''}>${Object.keys(following).length ? 'Reload everyone I follow' : 'Load accounts I follow'}</button></div>
+        <p class="status">${Object.keys(following).length ? 'New follows show up by themselves under New follows to sort. Reload everyone to also drop people you\'ve unfollowed; it takes a minute.' : 'This loads the account you\'re logged into now.'} Have another account? Switch to it on Instagram, come back, and tap the button: both are combined here.</p>
         <div id="cf-status">${statusLines()}</div>
         <input type="search" id="cf-search" placeholder="Search names or usernames, or type one to add" value="${escapeHtml(query)}"
           autocapitalize="none" autocomplete="off" spellcheck="false" aria-label="Search">
         <select id="cf-filter" aria-label="Show">
           <option value=""${filter === '' ? ' selected' : ''}>Everyone</option>
+          <option value="new"${filter === 'new' ? ' selected' : ''}>New follows to sort (${newToSort()})</option>
           <option value="none"${filter === 'none' ? ' selected' : ''}>Not in any list yet</option>${options}
           ${Object.keys(following).map((id) => `<option value="acct:${escapeHtml(id)}"${filter === 'acct:' + id ? ' selected' : ''}>Followed by ${escapeHtml(acctLabel(id))}</option>`).join('')}
         </select>
@@ -960,7 +1013,7 @@
         ${rows.length ? `<p class="status">${rows.length} ${rows.length === 1 ? 'account' : 'accounts'} shown.</p>` : ''}
         ${addable ? person({ name: typed, full: '', pic: '' }) : ''}
         ${rows.map(person).join('')}
-        ${!rows.length && !addable ? `<p class="status">${Object.keys(following).length ? 'No one matches.' : 'Tap Load accounts I follow to see everyone here.'}</p>` : ''}`;
+        ${!rows.length && !addable ? `<p class="status">${filter === 'new' && !query ? "No new follows to sort. You're all set." : Object.keys(following).length ? 'No one matches.' : 'Tap Load accounts I follow to see everyone here.'}</p>` : ''}`;
     }
 
     // --- setup, for anyone starting from scratch (and "Setup & help" later) ---
@@ -1137,7 +1190,8 @@
       }
       switch (b.dataset.act) {
         case 'home': view = 'stories'; root.scrollTop = 0; render(); break;
-        case 'sort': view = 'sort'; filter = ''; problem = ''; notice = ''; root.scrollTop = 0; render(); break;
+        case 'sort': view = 'sort'; filter = newToSort() ? 'new' : ''; problem = ''; notice = ''; root.scrollTop = 0; render(); checkNewFollows(); break;
+        case 'sortnew': view = 'sort'; filter = 'new'; query = ''; problem = ''; notice = ''; root.scrollTop = 0; render(); break;
         case 'done': view = settings.onboarded ? 'stories' : 'setup'; query = ''; problem = ''; notice = ''; root.scrollTop = 0; render(); break;
         case 'setup': view = 'setup'; step = 0; root.scrollTop = 0; render(); break;
         case 'next': step++; root.scrollTop = 0; render(); break;
@@ -1195,7 +1249,7 @@
     setInterval(tick, 400);
   }
 
-  const api = { reelCode, imageKey, reelsInMessages, threadItems, normalizeName, namesFromText, readSettings, shortLabel, newListId, routeFor, storyGroups, usersFromPage, sortRows, followingSummary };
+  const api = { mergeNewFollows, reelCode, imageKey, reelsInMessages, threadItems, normalizeName, namesFromText, readSettings, shortLabel, newListId, routeFor, storyGroups, usersFromPage, sortRows, followingSummary };
   if (typeof window !== 'undefined' && window.__FINITY_CF_TEST__) window.__FINITY_CF_TEST__ = api;
   else start();
 })();
