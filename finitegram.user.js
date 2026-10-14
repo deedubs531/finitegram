@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FiniteGram
 // @namespace    finity
-// @version      6.1.0
+// @version      6.2.0
 // @description  Replaces the instagram.com home feed with stories from lists you choose. No ads, reels or endless scrolling.
 // @match        https://www.instagram.com/*
 // @match        https://instagram.com/*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '6.1';
+  const VERSION = '6.2';
   const APP_NAME = 'FiniteGram'; // the name offered when adding to the home screen
   const SETTINGS_KEY = 'finity-close-friends';
   const STORIES_KEY = 'finity-cf-stories';
@@ -376,7 +376,7 @@
     @keyframes cf-spin { to { transform: rotate(360deg); } }
     #cf .wrap { max-width: 520px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
     #cf .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-    #cf .lists { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 0 16px; }
+    #cf .lists { display: flex; flex-wrap: wrap; gap: 8px; } /* wraps, so every list and New list stay in view */
     #cf .lists button { flex: none; }
     #cf button, #cf .chip { font: inherit; font-size: 14px; padding: 7px 13px; border-radius: 17px; border: 1px solid var(--line);
       background: var(--card); color: var(--fg); text-decoration: none; cursor: pointer; }
@@ -423,6 +423,7 @@
     #cf .donebar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1; display: flex; justify-content: center;
       padding: 10px 16px calc(env(safe-area-inset-bottom, 0px) + 8px); background: linear-gradient(transparent, var(--bg) 30%); }
     #cf .donebar button { min-width: 60%; padding: 11px 20px; font-size: 16px; }
+    #cf .newlist { border-style: dashed; color: var(--muted); }
     #cf .newfollows { display: inline-block; padding: 7px 12px; border-radius: 16px; background: var(--card); border: 1px solid var(--line); color: inherit; text-decoration: none; font-size: 14px; }
     #cf .end { text-align: center; color: var(--muted); padding: 12px 0; font-size: 13px; }
     #cf .end a { color: inherit; }
@@ -897,7 +898,8 @@
 
     function listButtons() {
       return settings.info.map((l) =>
-        `<button type="button" data-list="${l.id}" aria-pressed="${view === 'stories' && l.id === settings.active}">${escapeHtml(l.name)} (${settings.lists[l.id].length})</button>`).join('');
+        `<button type="button" data-list="${l.id}" aria-pressed="${view === 'stories' && l.id === settings.active}">${escapeHtml(l.name)} (${settings.lists[l.id].length})</button>`).join('')
+        + '<button type="button" class="newlist" data-act="newlist" aria-label="New list">＋ New list</button>';
     }
 
     // Stories · Search · Messages · Sort accounts, like Instagram's own tab bar. Messages is bold when
@@ -1095,6 +1097,7 @@
       settings.lists[id] = [];
       saveSettings();
       notice = `List "${clean}" added.`;
+      return id;
     }
 
     function removeList(id) {
@@ -1205,6 +1208,19 @@
           refreshStories();
           break;
         case 'following': loadFollowing(); break;
+        case 'newlist': {
+          // Name it, then go straight to sorting with the new list's button next to everyone.
+          const name = window.prompt('Name your new list (for example Family, Music or LA):', '');
+          const id = name && addList(name);
+          if (!id) break;
+          settings.active = id;
+          saveSettings();
+          view = 'sort'; filter = ''; query = ''; problem = '';
+          notice = `List "${listName(id)}" added. Tap ${shortLabel(listName(id))} next to anyone to put them in it.`;
+          root.scrollTop = 0;
+          render();
+          break;
+        }
         case 'addlist': {
           addList(root.querySelector('#cf-newlist').value);
           render();
