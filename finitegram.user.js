@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FiniteGram
 // @namespace    finity
-// @version      6.2.0
+// @version      6.3.0
 // @description  Replaces the instagram.com home feed with stories from lists you choose. No ads, reels or endless scrolling.
 // @match        https://www.instagram.com/*
 // @match        https://instagram.com/*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '6.2';
+  const VERSION = '6.3';
   const APP_NAME = 'FiniteGram'; // the name offered when adding to the home screen
   const SETTINGS_KEY = 'finity-close-friends';
   const STORIES_KEY = 'finity-cf-stories';
@@ -786,6 +786,11 @@
 
     // The first account seen becomes the main one (the account whose stories this shows).
     function adoptMainAccount() {
+      // Also name its loaded follows, so the Sort screen says @name rather than "account 1".
+      if (me?.id && me.name && following[me.id] && !following[me.id].name) {
+        following[me.id].name = me.name;
+        save(FOLLOWING_KEY, following);
+      }
       if (me?.name && !settings.mainAccount) {
         settings.mainAccount = me.name;
         saveSettings();
@@ -1261,6 +1266,15 @@
       const title = Object.assign(document.createElement('meta'), { name: 'apple-mobile-web-app-title', content: APP_NAME });
       document.head.append(link, title);
     }
+    // Safari's "Open in the Instagram app" bar comes from a tag in Instagram's page. Take the tag
+    // out the moment it arrives, before Safari reads it.
+    const APP_BANNER = 'meta[name="apple-itunes-app"], meta[name="google-play-app"]';
+    const dropAppBanner = () => { for (const m of document.querySelectorAll(APP_BANNER)) m.remove(); };
+    new MutationObserver((changes) => {
+      for (const c of changes) for (const n of c.addedNodes) if (n.nodeType === 1 && (n.matches(APP_BANNER) || n.querySelector?.(APP_BANNER))) dropAppBanner();
+    }).observe(document, { childList: true, subtree: true });
+    dropAppBanner();
+
     tick(); // leaves reels before the page draws
     setInterval(tick, 400);
   }
