@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FiniteGram
 // @namespace    finity
-// @version      7.1.0
+// @version      7.2.0
 // @description  Replaces the instagram.com home feed with stories from lists you choose. No ads, reels or endless scrolling.
 // @match        https://www.instagram.com/*
 // @match        https://instagram.com/*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '7.1';
+  const VERSION = '7.2';
   const APP_NAME = 'FiniteGram'; // the name offered when adding to the home screen
   const SETTINGS_KEY = 'finity-close-friends';
   const STORIES_KEY = 'finity-cf-stories';
@@ -449,7 +449,7 @@
     #cf .donebar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1; display: flex; justify-content: center;
       padding: 10px 16px calc(env(safe-area-inset-bottom, 0px) + 8px); background: linear-gradient(transparent, var(--bg) 30%); }
     #cf .donebar button { min-width: 60%; padding: 11px 20px; font-size: 16px; }
-    #cf-reader { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; z-index: 2147483600; opacity: .01; pointer-events: none; }
+    #cf-reader { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; z-index: -1; opacity: .01; pointer-events: none; contain: strict; }
     #cf .posts { display: flex; flex-direction: column; gap: 18px; margin: 0 -16px; }
     #cf .post { display: block; color: inherit; text-decoration: none; }
     #cf .post .ph { display: flex; justify-content: space-between; gap: 8px; padding: 0 16px 8px; font-size: 14px; }
@@ -749,8 +749,13 @@
         // Show what's arrived so far, then ask Instagram for more.
         if (Object.keys(found).length) { postCache = { ...postCache, posts: { ...postCache.posts, ...found } }; }
         if (view === 'posts') render();
-        articles[articles.length - 1].scrollIntoView({ block: 'end' });
-        win?.scrollTo(0, doc.documentElement.scrollHeight);
+        // Scroll the feed's own page to the bottom so Instagram loads more. (Not scrollIntoView:
+        // on iPhone that can scroll the visible page too, making it jump.)
+        for (let n = articles[articles.length - 1].parentElement; n && n !== doc.documentElement; n = n.parentElement) {
+          if (n.scrollHeight > n.clientHeight + 1 && /(auto|scroll)/.test((win || window).getComputedStyle(n).overflowY)) n.scrollTop = n.scrollHeight;
+        }
+        if (!here) win?.scrollTo(0, doc.documentElement.scrollHeight);
+        else window.scrollTo(0, document.documentElement.scrollHeight);
       }, READ_STEP_MS);
     }
 
@@ -1055,6 +1060,10 @@
     let shown = '';
     function render() {
       if (!root) return;
+      if (view === 'posts' && root.querySelector('#cf-plist')) { // already on the Posts page: update it in place
+        shown = '';
+        return updatePosts();
+      }
       const body = view === 'sort' ? sortView() : view === 'setup' ? setupView() : view === 'posts' ? postsView() : storiesView();
       const bottom = view === 'sort'
         ? '<div class="donebar"><button type="button" class="primary" data-act="done">Done</button></div>'
@@ -1111,32 +1120,90 @@
       return `<div class="modes"><button type="button" data-act="stories" aria-pressed="${view === 'stories'}">Stories</button><button type="button" data-act="posts" aria-pressed="${view === 'posts'}">Posts</button></div>`;
     }
 
-    function postsView() {
+    // The Posts page is drawn once, then only its changing parts are updated in place: the
+    // progress line, and new posts slotted in among the ones already showing (whose pictures are
+    // never redrawn), so nothing flickers while posts are being read.
+    function postsParts() {
       const cutoff = Date.now() - POST_DAYS * 86400000;
-      const posts = settings.lists[settings.active].length ? postsForList(postCache, people(), cutoff) : [];
-      const prog = reading && readProgress(reading.oldest, Date.now(), reading.startedAt, POST_DAYS);
-      const status = reading
-        ? `<p class="status" role="status">${escapeHtml(reading.step)}</p><div class="progress" aria-hidden="true"><span style="width:${Math.max(4, Math.round(prog.done * 100))}%"></span></div>`
+      const listed = settings.lists[settings.active].length > 0;
+      const posts = listed ? postsForList(postCache, people(), cutoff) : [];
+      const status = reading ? ''
         : readProblem === 'background'
           ? `<div class="card"><p>${postCache.at ? `Updated ${ago(postCache.at)}. ` : ''}Instagram doesn't let FiniteGram read posts in the background, so it reads them right here: tap below and it takes a minute or two, then your posts are waiting.</p>
               <div class="row"><button type="button" class="primary" data-act="readhere">Read posts now</button></div></div>`
           : readProblem ? `<p class="status error" role="alert">${escapeHtml(readProblem)}</p>`
             : postCache.at ? `<p class="status">Updated ${ago(postCache.at)} · pull down to refresh</p>` : '';
-      const card = (p) => `<a class="post" href="/p/${encodeURIComponent(p.code)}/">
-          <div class="ph"><b>@${escapeHtml(p.author)}</b><span>${escapeHtml(ago(p.t))}</span></div>
-          <div class="pic" style="aspect-ratio:1/${p.ratio}"><img src="${escapeHtml(p.img)}" alt="Post by @${escapeHtml(p.author)}" loading="lazy">${p.more ? '<span class="more">1 of more ›</span>' : ''}</div></a>`;
-      const empty = !settings.lists[settings.active].length
+      const empty = !listed
         ? `<p class="status">No one in ${escapeHtml(listName())} yet. Tap Sort accounts to add people.</p>`
         : !posts.length && !reading && postCache.complete ? `<p class="status">No posts from ${escapeHtml(listName())} in the last ${POST_DAYS} days.</p>` : '';
+      const end = posts.length && postCache.complete && !reading ? `<p class="end">You're caught up: that's everything from ${escapeHtml(listName())} in the last ${POST_DAYS} days.</p>`
+        : reading && posts.length ? '<p class="end">More on the way…</p>' : '';
+      return { posts, status, empty, end };
+    }
+    const postCard = (p) => `<a class="post" data-code="${escapeHtml(p.code)}" href="/p/${encodeURIComponent(p.code)}/">
+          <div class="ph"><b>@${escapeHtml(p.author)}</b><span>${escapeHtml(ago(p.t))}</span></div>
+          <div class="pic" style="aspect-ratio:1/${p.ratio}"><img src="${escapeHtml(p.img)}" alt="Post by @${escapeHtml(p.author)}" loading="lazy">${p.more ? '<span class="more">1 of more ›</span>' : ''}</div></a>`;
+    const progressHtml = () => {
+      if (!reading) return '';
+      const { done } = readProgress(reading.oldest, Date.now(), reading.startedAt, POST_DAYS);
+      return `<p class="status" role="status">${escapeHtml(reading.step)}</p><div class="progress" aria-hidden="true"><span style="width:${Math.max(4, Math.round(done * 100))}%"></span></div>`;
+    };
+
+    function postsView() {
+      const { posts, status, empty, end } = postsParts();
       return `<div class="lists" id="cf-lists">${listButtons()}</div>
         ${modes()}
-        ${status}
-        <h2>Posts · ${escapeHtml(listName())}</h2>
-        ${empty}
-        ${posts.length ? `<div class="posts">${posts.map(card).join('')}</div>` : ''}
-        ${posts.length && postCache.complete && !reading ? `<p class="end">You're caught up: that's everything from ${escapeHtml(listName())} in the last ${POST_DAYS} days.</p>` : ''}
-        ${reading && posts.length ? '<p class="end">More on the way…</p>' : ''}
+        <div id="cf-pstatus">${reading ? progressHtml() : status}</div>
+        <h2 id="cf-ph">Posts · ${escapeHtml(listName())}</h2>
+        <div id="cf-pempty">${empty}</div>
+        <div class="posts" id="cf-plist">${posts.map(postCard).join('')}</div>
+        <div id="cf-pend">${end}</div>
         <p class="end">${APP_NAME} ${VERSION} · <a href="#" data-act="setup">Setup & help</a></p>`;
+    }
+
+    const drawn = new WeakMap(); // element → the HTML last put in it
+    function setHtml(el, html) {
+      if (!el || drawn.get(el) === html) return;
+      drawn.set(el, html);
+      el.innerHTML = html;
+    }
+    function updatePosts() {
+      const { posts, status, empty, end } = postsParts();
+      setHtml(root.querySelector('#cf-lists'), listButtons());
+      setHtml(root.querySelector('#cf-ph'), `Posts · ${escapeHtml(listName())}`);
+      setHtml(root.querySelector('#cf-pempty'), empty);
+      setHtml(root.querySelector('#cf-pend'), end);
+      const box = root.querySelector('#cf-pstatus');
+      const bar = box.querySelector('.progress span');
+      if (reading && bar) { // just the words and the bar's length
+        const p = box.querySelector('p');
+        if (p.textContent !== reading.step) p.textContent = reading.step;
+        const { done } = readProgress(reading.oldest, Date.now(), reading.startedAt, POST_DAYS);
+        bar.style.width = `${Math.max(4, Math.round(done * 100))}%`;
+      } else setHtml(box, reading ? progressHtml() : status);
+      // Posts: keep the ones already there, add new ones in their place, drop ones that left.
+      const list = root.querySelector('#cf-plist');
+      const have = new Map([...list.children].map((n) => [n.dataset.code, n]));
+      posts.forEach((p, i) => {
+        let node = have.get(p.code);
+        if (!node) {
+          const t = document.createElement('template');
+          t.innerHTML = postCard(p).trim();
+          node = t.content.firstChild;
+        }
+        have.delete(p.code);
+        if (list.children[i] !== node) list.insertBefore(node, list.children[i] || null);
+      });
+      for (const n of have.values()) n.remove();
+      const tabs = root.querySelector('#cf-main > .tabbar');
+      const nextTabs = tabbar();
+      if (tabs && drawn.get(tabs) !== nextTabs) {
+        const t = document.createElement('template');
+        t.innerHTML = nextTabs.trim();
+        const fresh = t.content.firstChild;
+        drawn.set(fresh, nextTabs);
+        tabs.replaceWith(fresh);
+      }
     }
 
     function storiesView() {
