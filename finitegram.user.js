@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FiniteGram
 // @namespace    finity
-// @version      5.6.0
+// @version      6.0.0
 // @description  Replaces the instagram.com home feed with stories from lists you choose. No ads, reels or endless scrolling.
 // @match        https://www.instagram.com/*
 // @match        https://instagram.com/*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '5.6';
+  const VERSION = '6.0';
   const APP_NAME = 'FiniteGram'; // the name offered when adding to the home screen
   const SETTINGS_KEY = 'finity-close-friends';
   const STORIES_KEY = 'finity-cf-stories';
@@ -31,29 +31,20 @@
   const VIEW_KEY = 'finity-cf-view'; // where you were on the sorting screen, kept while you look at a profile
   const ME_KEY = 'finity-cf-me'; // which account is logged in, checked once per visit
   const QUEUE_KEY = 'finity-cf-queue'; // the rest of the list's new stories, while you're watching
-  const NAV_KEY = 'finity-cf-nav'; // the previous page, the last conversation, and the reel opened from it
-  const REEL_LOG_KEY = 'finity-cf-reel-log'; // what happened around reels this visit, for "Reel check" in Setup & help
-  const NOTE_KEY = 'finity-cf-note'; // which reel heads-ups were shown this visit, and one waiting for after a reload
-  // Instagram sometimes plays one of its own reels instead of the one a friend sent, and FiniteGram
-  // can't always stop it. So it says so, cheerfully. One line is picked at random each time.
+  const NAV_KEY = 'finity-cf-nav'; // the previous page and the last conversation
+  const NOTE_KEY = 'finity-cf-note'; // a note to show once the chat has reloaded
+  // Reels people send you show up in the chat but don't open. One of these is picked at random.
   const NOTES = {
-    chat: [
-      "Heads up: reels in here are a bit of a gamble. Instagram sometimes swaps your friend's reel for one of its own.",
-      "Friendly warning: tap a reel and Instagram may hand you a stranger's. Not your friend's taste. Not your fault.",
-      'Reels from friends: usually. Reels from the algorithm wearing a friend costume: occasionally.',
-      "Tap a reel at your own risk. If it's not what you were sent, Instagram is freelancing again.",
+    tap: [
+      "Reels don't open here. Ask them what happens in it.",
+      'No reels on FiniteGram. Send a 😂 and carry on.',
+      "That one stays shut. Tell them it's hilarious anyway.",
+      'Reels are off here. Get the story in person.',
     ],
-    popup: [
-      "Is this the reel you were sent? If not, that's Instagram slipping one in. One and done.",
-      'Plot twist: this may not be your friend\'s reel. Watch it or don\'t, then back to the chat.',
-      "Don't recognise this? Instagram picked it, not your friend. FiniteGram is judging it quietly.",
-      'Reminder: swiping is switched off. Instagram can try, but this is the only reel you get.',
-    ],
-    blocked: [
+    closed: [
+      "Reels don't open here. Back to your chat.",
       'Nice try, Instagram. Back to your chat.',
-      "That's one reel. FiniteGram has spoken.",
-      'Instagram tried to sneak in another reel. Denied.',
-      'No second helpings. Back to the conversation.',
+      "That reel stays shut. Here's your chat.",
     ],
   };
   const pick = (list) => list[Math.floor(Math.random() * list.length)];
@@ -117,7 +108,6 @@
       active: info.some((l) => l.id === s.active) ? s.active : info[0].id,
       onboarded: s.onboarded === true || fromBefore5,
       mainAccount: normalizeName(s.mainAccount || '') || (fromBefore5 ? 'deedubs531' : ''),
-      dmReels: s.dmReels !== false,
     };
   }
 
@@ -136,8 +126,8 @@
   }
 
   /**
-   * What to do with an address: show our 'home', 'story' (allowed), a single 'reel' (decided by
-   * reelDecision), 'block' it, send 'to-search', or leave it 'ok'.
+   * What to do with an address: show our 'home', 'story' (allowed), a single 'reel' (never shown;
+   * back to the chat it came from), 'block' it, send 'to-search', or leave it 'ok'.
    */
   function routeFor(pathname, people) {
     const path = pathname.toLowerCase();
@@ -151,41 +141,10 @@
     return 'ok';
   }
 
-  /**
-   * A single reel: 'allow' it when it was opened from Messages (or is the one already allowed),
-   * 'back' to the conversation when Instagram moves on to the next reel, otherwise 'block'.
-   */
   /** The reel code in a link or address (/reel/CODE/, /reels/CODE/), or ''. */
   function reelCode(href) {
     const m = String(href || '').match(/\/reels?\/([A-Za-z0-9_-]+)/);
     return m ? m[1] : '';
-  }
-
-  /** Instagram's number for a post or reel, from the letters in its address. */
-  function mediaId(code) {
-    const abc = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-    let id = 0n;
-    for (const c of String(code).slice(0, 11)) {
-      const i = abc.indexOf(c);
-      if (i < 0) return '';
-      id = id * 64n + BigInt(i);
-    }
-    return code ? id.toString() : '';
-  }
-
-  /** The video (and who posted it) from Instagram's answer about one post. */
-  function reelVideo(json) {
-    const item = json?.items?.[0];
-    if (!item) return null;
-    const media = item.video_versions ? item : (item.carousel_media || []).find((m) => m?.video_versions);
-    const url = media?.video_versions?.[0]?.url;
-    if (!url) return null;
-    return {
-      url,
-      poster: media.image_versions2?.candidates?.[0]?.url || '',
-      user: item.user?.username || '',
-      caption: item.caption?.text || '',
-    };
   }
 
   /** The file name of a picture on Instagram's servers: the same for every size of one picture. */
@@ -196,12 +155,10 @@
 
   /**
    * The reels in a chat, from Instagram's answer about its messages: for each message that shares
-   * exactly one reel, its pictures (so a tap on its preview can be recognised) and, when given,
-   * its video.
+   * exactly one reel, its pictures (so its preview can be recognised), as { picture: reel code }.
    */
   function reelsInMessages(items) {
     const byImage = {};
-    const videos = {};
     for (const item of Array.isArray(items) ? items : []) {
       const codes = new Set();
       const images = [];
@@ -216,8 +173,6 @@
         if (typeof x !== 'object') return;
         if (typeof x.code === 'string' && (x.video_versions || x.product_type === 'clips' || x.media_type === 2)) {
           codes.add(x.code);
-          const video = x.video_versions && reelVideo({ items: [x] });
-          if (video) videos[x.code] = video;
         }
         for (const v of Array.isArray(x) ? x : Object.values(x)) walk(v, depth + 1);
       };
@@ -226,7 +181,7 @@
       const [code] = codes;
       for (const key of images) byImage[key] = code;
     }
-    return { byImage, videos };
+    return byImage;
   }
 
   /** The messages of chat `id` (as in /direct/t/<id>/) from Instagram's inbox or thread answer. */
@@ -235,13 +190,6 @@
     const threads = json?.inbox?.threads || [];
     const t = threads.find((x) => [x?.thread_id, x?.thread_v2_id, x?.thread_igid].map(String).includes(String(id)));
     return t?.items || [];
-  }
-
-  function reelDecision(code, prevPath, allowedCode, enabled) {
-    if (!enabled) return 'block';
-    if (code && code === allowedCode) return 'allow';
-    if (String(prevPath || '').startsWith('/direct/')) return 'allow';
-    return allowedCode ? 'back' : 'block';
   }
 
   /**
@@ -352,18 +300,6 @@
     }
   }
 
-  // A short diary of what happened around reels this visit, so a problem on a real phone can be seen.
-  function reelLog(msg) {
-    const log = load(REEL_LOG_KEY, sessionStorage) || [];
-    const t = new Date();
-    log.push(`${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}:${String(t.getSeconds()).padStart(2, '0')} ${msg}`);
-    save(REEL_LOG_KEY, log.slice(-30), sessionStorage);
-  }
-  function reelLogText() {
-    const log = load(REEL_LOG_KEY, sessionStorage) || [];
-    return `FiniteGram ${VERSION} · ${navigator.userAgent.replace(/^.*?\(([^)]*)\).*$/, '$1')}\n${log.join('\n') || '(nothing yet)'}`;
-  }
-
   // ---------- the page ----------
 
   const ICONS = {
@@ -381,25 +317,18 @@
        the press-and-hold that pauses a story, and taps that skip ahead. */
     html.cf-story, html.cf-story * { -webkit-touch-callout: none !important; -webkit-user-select: none !important; user-select: none !important; }
     html.cf-story img, html.cf-story video { pointer-events: none !important; }
-    /* Our own player for a reel sent in Messages: one video, nothing under it to scroll to. */
-    html.cf-reel, html.cf-reel body { overflow: hidden !important; overscroll-behavior: none !important; }
-    html.cf-reel video:not(#cf-video) { visibility: hidden !important; }
-    #cf-player { position: fixed; inset: 0; z-index: 2147483647; background: #000; color: #fff; display: flex; flex-direction: column;
-      font: 15px/1.4 -apple-system, system-ui, sans-serif; touch-action: none; overscroll-behavior: none;
-      padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px); }
-    #cf-player .top { display: flex; align-items: center; gap: 12px; padding: 10px 14px; }
-    #cf-player button { font: inherit; color: #fff; background: rgba(255,255,255,.14); border: 0; border-radius: 18px; padding: 8px 14px; }
-    #cf-player .who { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    #cf-player .stage { flex: 1; min-height: 0; display: grid; place-items: center; }
-    #cf-player video { max-width: 100%; max-height: 100%; touch-action: manipulation; }
-    #cf-player .msg { padding: 24px; text-align: center; color: #bbb; }
     #cf-note { position: fixed; left: 12px; right: 12px; top: calc(env(safe-area-inset-top, 0px) + 10px); z-index: 2147483647;
       display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 14px; background: rgba(20,20,20,.94); color: #fff;
       font: 14px/1.4 -apple-system, system-ui, sans-serif; box-shadow: 0 6px 24px rgba(0,0,0,.35); transition: opacity .3s, transform .3s; }
     #cf-note.gone { opacity: 0; transform: translateY(-12px); pointer-events: none; }
     #cf-note b { font-size: 18px; line-height: 1; }
     #cf-note span { flex: 1; }
-    #cf-player .cap { padding: 8px 14px 14px; color: #ccc; font-size: 14px; max-height: 4.4em; overflow: hidden; }
+    /* A reel someone sent: still there in the chat, greyed out and labelled, but it doesn't open. */
+    [data-cf-reel] { position: relative !important; }
+    [data-cf-reel] img { filter: grayscale(1) brightness(.5) !important; }
+    [data-cf-reel]::after { content: "🎬 Reel · ask them about it"; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      padding: 6px 10px; border-radius: 14px; background: rgba(0,0,0,.72); color: #fff; white-space: nowrap; pointer-events: none;
+      font: 600 12px/1.2 -apple-system, system-ui, sans-serif; }
     html.cf-story input, html.cf-story textarea, html.cf-story [contenteditable] { -webkit-user-select: text !important; user-select: text !important; }
     #cf { --bg: #fafafa; --card: #fff; --fg: #111; --muted: #6b6b6b; --line: #e3e3e3; --accent: #1f7a4d; --on-accent: #fff;
       position: fixed; inset: 0; z-index: 2147483646; overflow-y: auto; -webkit-overflow-scrolling: touch;
@@ -500,7 +429,7 @@
     const acctLabel = (id) => (following[id]?.name ? '@' + following[id].name : `account ${Object.keys(following).indexOf(id) + 1}`);
     const saveSettings = () => save(SETTINGS_KEY, {
       ...load(SETTINGS_KEY), listInfo: settings.info, lists: settings.lists, active: settings.active,
-      onboarded: settings.onboarded, mainAccount: settings.mainAccount, dmReels: settings.dmReels,
+      onboarded: settings.onboarded, mainAccount: settings.mainAccount,
     });
 
     // --- routing ---
@@ -508,198 +437,107 @@
     // userscripts may run walled off from the page and never hear about it. This also puts our
     // page, styles and home-screen icon back if Instagram's own code removes them.
     let lastPath = null;
-    let player = null; // our player for a reel sent in Messages, while it's open
 
-    // Instagram's reel viewer always lines up suggested reels after the one you were sent, so a
-    // sent reel never opens there: tapping it in a chat opens our own player with just that video.
-    // Which reel a tap in a chat is on: a reel link, or a picture we know from the chat's messages.
-    let chatReels = { id: '', at: 0, loading: false, byImage: {}, videos: {}, count: 0 };
+    // --- reels in Messages: you can see that one was sent, but it doesn't open ---
+    // FiniteGram reads the chat's messages (the same ones Instagram's page loads) to learn which
+    // preview pictures are reels, greys those out with a label, and swallows taps on them.
+    let chatReels = { id: '', at: 0, loading: false, byImage: {} };
     function loadChatReels() {
       const id = (location.pathname.match(/^\/direct\/t\/([^/]+)/) || [])[1] || '';
       if (!id || chatReels.loading || (chatReels.id === id && Date.now() - chatReels.at < 45000)) return;
-      if (chatReels.id !== id) chatReels = { id, at: 0, loading: false, byImage: {}, videos: {}, count: 0 };
+      if (chatReels.id !== id) chatReels = { id, at: 0, loading: false, byImage: {} };
       chatReels.loading = true;
       const add = (items) => {
-        const found = reelsInMessages(items);
-        Object.assign(chatReels.byImage, found.byImage);
-        Object.assign(chatReels.videos, found.videos);
+        Object.assign(chatReels.byImage, reelsInMessages(items));
         return items.length;
       };
       igGet(`/api/v1/direct_v2/threads/${encodeURIComponent(id)}/?limit=40`)
         .then((json) => add(threadItems(json, id)))
         .catch(() => 0)
         .then(async (n) => n || add(threadItems(await igGet('/api/v1/direct_v2/inbox/?limit=30&thread_message_limit=40'), id)))
-        .then((n) => {
-          const count = new Set(Object.values(chatReels.byImage)).size;
-          if (count !== chatReels.count || !chatReels.at) reelLog(`chat read: ${n} messages, ${count} reels`);
-          chatReels.count = count;
-        })
-        .catch((err) => reelLog(`couldn't read the chat: ${err.message}`))
+        .catch(() => {}) // can't read the chat: reels that open anyway are closed straight away instead
         .finally(() => { chatReels.at = Date.now(); chatReels.loading = false; });
     }
-    function reelAt(target) {
+
+    const picUrls = (pic) => [pic.currentSrc, pic.src, pic.poster, ...(pic.srcset || '').split(',').map((x) => x.trim().split(' ')[0])];
+    const isReelPic = (pic) => picUrls(pic).some((url) => chatReels.byImage[imageKey(url)]);
+
+    /** Is a tap on this spot a tap on a sent reel? (a reel link, or a reel's preview picture) */
+    function onReel(target) {
       const link = target.closest?.('a[href]');
-      const code = link && reelCode(link.getAttribute('href'));
-      if (code) return code;
+      if (link && reelCode(link.getAttribute('href'))) return true;
       // Climb from the tapped spot to the nearest picture (the preview, or what covers it). Only
-      // that bubble's pictures count, never the neighbours'.
+      // that message's pictures count, never the neighbours'.
       for (let el = target, i = 0; el && el !== document.body && i < 8; el = el.parentElement, i++) {
+        if (el.dataset?.cfReel) return true;
         const pics = el.querySelectorAll ? [...el.querySelectorAll('img, video[poster]')] : [];
         if (el.tagName === 'IMG' || el.tagName === 'VIDEO') pics.unshift(el);
-        const bg = el.style?.backgroundImage && chatReels.byImage[imageKey(el.style.backgroundImage.replace(/^url\(["']?|["']?\)$/g, ''))];
-        if (bg) return bg;
-        if (!pics.length) continue;
-        for (const pic of pics) {
-          for (const url of [pic.currentSrc, pic.src, pic.poster, ...(pic.srcset || '').split(',').map((x) => x.trim().split(' ')[0])]) {
-            const hit = chatReels.byImage[imageKey(url)];
-            if (hit) return hit;
-          }
-        }
-        return ''; // the nearest pictures aren't a reel
+        if (pics.length) return pics.some(isReelPic);
       }
-      return '';
+      return false;
     }
-    // Catch the whole tap (Instagram may act on finger-down or finger-up, not just the click).
-    let tapCode = '';
-    let tapTimer = 0;
+
+    // Grey out each reel preview in the chat and label it.
+    function markReels() {
+      if (!Object.keys(chatReels.byImage).length) return;
+      for (const pic of document.querySelectorAll('img:not([data-cf-seen])')) {
+        pic.dataset.cfSeen = '1';
+        if (isReelPic(pic) && pic.parentElement) pic.parentElement.dataset.cfReel = '1';
+      }
+    }
+
+    // Swallow the whole tap on a reel (Instagram may act on finger-down or finger-up, not just the
+    // click), and answer it with a note instead. Scrolls that start on a reel still scroll.
+    let onReelTap = false;
     let tapFrom = { x: 0, y: 0 };
-    const inChat = (e) => location.pathname.startsWith('/direct/') && settings.dmReels && !e.target.closest?.('#cf-player, #cf');
+    const inChat = (e) => location.pathname.startsWith('/direct/') && !e.target.closest?.('#cf, #cf-note');
     for (const type of ['touchstart', 'pointerdown', 'mousedown']) {
       window.addEventListener(type, (e) => {
-        if (type !== 'mousedown') tapCode = '';
+        if (type !== 'mousedown') onReelTap = false;
         if (!inChat(e)) return;
-        if (type === 'touchstart' || type === 'pointerdown' || !tapCode) tapCode = reelAt(e.target);
+        if (type !== 'mousedown' || !onReelTap) onReelTap = onReel(e.target);
         if (type === 'touchstart') tapFrom = { x: e.touches[0]?.clientX || 0, y: e.touches[0]?.clientY || 0 };
-        if (tapCode) e.stopImmediatePropagation();
+        if (onReelTap) e.stopImmediatePropagation();
       }, true);
     }
     for (const type of ['pointerup', 'mouseup', 'touchend']) {
       window.addEventListener(type, (e) => {
-        if (!tapCode || !inChat(e)) return;
-        e.stopImmediatePropagation();
-        const t = e.changedTouches?.[0];
-        if (type === 'touchend' && t && Math.hypot(t.clientX - tapFrom.x, t.clientY - tapFrom.y) < 10) { // a tap, not a scroll: open even if no click follows
-          clearTimeout(tapTimer);
-          const code = tapCode;
-          tapTimer = setTimeout(() => { if (!player) { reelLog(`tap on sent reel ${code}: own player`); openPlayer(code, false); } }, 400);
-        }
+        if (onReelTap && inChat(e)) e.stopImmediatePropagation();
       }, true);
     }
+    let lastNoteAt = 0;
     document.addEventListener('click', (e) => {
-      if (!inChat(e)) return;
-      const code = reelAt(e.target) || tapCode;
-      if (!code) {
-        const el = e.target;
-        const link = el.closest?.('a[href]');
-        reelLog(`tap in chat on <${el.tagName?.toLowerCase()}${el.getAttribute?.('role') ? ' role=' + el.getAttribute('role') : ''}>${link ? ' in link ' + link.getAttribute('href') : ''}`);
-        setTimeout(() => { // what's on screen just after: every video, how big, and where it sits
-          const vids = [...document.querySelectorAll('video:not(#cf-video)')].map((v) => {
-            const r = v.getBoundingClientRect();
-            return `${Math.round(r.width)}x${Math.round(r.height)}@${Math.round(r.top)}${v.closest('article') ? ' in-article' : ''}${v.closest('[role="dialog"]') ? ' in-dialog' : ''}${v.paused ? '' : ' playing'}`;
-          });
-          if (vids.length) reelLog(`  videos: ${vids.join(', ')} · screen ${window.innerHeight}px · ${location.pathname}`);
-        }, 1500);
-        return;
-      }
+      if (!inChat(e) || !(onReelTap || onReel(e.target))) return;
       e.preventDefault();
       e.stopImmediatePropagation();
-      clearTimeout(tapTimer);
-      tapCode = '';
-      if (player?.dataset.code === code) return;
-      reelLog(`tap on sent reel ${code}: own player`);
-      openPlayer(code, false);
+      onReelTap = false;
+      if (Date.now() - lastNoteAt > 800) { lastNoteAt = Date.now(); note(pick(NOTES.tap)); }
     }, true);
-    // In a chat, Instagram opens a sent reel in a pop-up over the conversation without changing the
-    // address, and lines up suggested reels after it. So, going by what's on screen:
-    // 1. While a full-screen video is showing, up/down swipes and scrolling are switched off from
-    //    the very first movement, and Instagram's own swipe code never hears about them.
-    // 2. In Messages, once a pop-up has shown one reel, a different one starting closes it.
+
+    // If Instagram opens a reel anyway (a full-screen video over the chat), close it straight away.
     function viewerVideo() {
-      const inChat = location.pathname.startsWith('/direct/');
       for (const v of document.querySelectorAll('video')) {
-        if (v.id === 'cf-video' || (!inChat && v.closest('article'))) continue;
         const r = v.getBoundingClientRect();
         if (r.bottom <= 0 || r.top >= window.innerHeight || !r.height) continue;
-        // Full-screen anywhere; in a chat, also any video playing at a third of the screen or more.
-        if (r.height >= window.innerHeight * VIEWER_MIN_HEIGHT || (inChat && !v.paused && r.height >= window.innerHeight / 3)) return v;
+        if (r.height >= window.innerHeight * VIEWER_MIN_HEIGHT || (!v.paused && r.height >= window.innerHeight / 3)) return v;
       }
       return null;
     }
+    let closing = false;
+    function checkViewer() {
+      if (closing || !location.pathname.startsWith('/direct/') || !viewerVideo()) return;
+      closing = true;
+      for (const v of document.querySelectorAll('video')) { v.muted = true; v.pause(); }
+      save(NOTE_KEY, { pending: pick(NOTES.closed) }, sessionStorage);
+      const nav = load(NAV_KEY, sessionStorage) || {};
+      location.replace(nav.direct || location.pathname);
+    }
+    document.addEventListener('playing', checkViewer, true);
+    document.addEventListener('play', () => setTimeout(checkViewer, 30), true);
 
-    function scrollableAncestor(el) {
-      for (let n = el; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
-        const y = getComputedStyle(n).overflowY;
-        if ((y === 'auto' || y === 'scroll') && n.scrollHeight > n.clientHeight + 1) return n;
-      }
-      return null;
-    }
-
-    function lockApplies(target) {
-      if (!target?.closest || location.pathname.startsWith('/stories/')) return false;
-      if (target.closest('#cf, textarea, input, [contenteditable="true"]')) return false;
-      const video = viewerVideo();
-      if (!video && !player && routeFor(location.pathname, people()) !== 'reel') return false;
-      const scroller = scrollableAncestor(target); // e.g. comments: still scrollable
-      return !(scroller && !(video && scroller.contains(video)));
-    }
-
-    const gesture = { locked: false, axis: '', x: 0, y: 0, target: null, touch: null, pointerId: 1, cancelled: false, logged: false };
-    function startGesture(target, x, y) {
-      Object.assign(gesture, { locked: lockApplies(target), axis: '', x, y, target, cancelled: false, logged: false });
-    }
-    function vertical(x, y) {
-      if (!gesture.axis) {
-        const dx = Math.abs(x - gesture.x), dy = Math.abs(y - gesture.y);
-        if (!dx && !dy) return false;
-        gesture.axis = dy >= dx ? 'y' : 'x';
-      }
-      return gesture.axis === 'y';
-    }
-    function cancelForInstagram() { // it saw the finger go down but not move: tell it the gesture is off
-      if (gesture.cancelled || !gesture.target) return;
-      gesture.cancelled = true;
-      try { gesture.target.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: gesture.pointerId, pointerType: 'touch', isPrimary: true })); } catch { /* not available */ }
-      try { gesture.target.dispatchEvent(new TouchEvent('touchcancel', { bubbles: true, changedTouches: gesture.touch ? [gesture.touch] : [] })); } catch { /* not available */ }
-    }
-    const active = { capture: true, passive: false };
-    window.addEventListener('pointerdown', (e) => {
-      if (e.pointerType !== 'touch' || !e.isPrimary) return;
-      gesture.pointerId = e.pointerId;
-      startGesture(e.target, e.clientX, e.clientY);
-    }, active);
-    window.addEventListener('touchstart', (e) => {
-      if (e.touches.length !== 1) { gesture.locked = false; return; } // pinch-zoom is never blocked
-      gesture.touch = e.touches[0];
-      startGesture(e.target, e.touches[0].clientX, e.touches[0].clientY);
-    }, active);
-    window.addEventListener('touchmove', (e) => {
-      if (!gesture.locked) return;
-      if (e.cancelable) e.preventDefault(); // from the first pixel, before Safari starts a scroll
-      const t = e.touches[0];
-      if (t && vertical(t.clientX, t.clientY)) {
-        e.stopImmediatePropagation();
-        if (!gesture.logged) { gesture.logged = true; reelLog('stopped a swipe'); }
-      }
-    }, active);
-    window.addEventListener('pointermove', (e) => {
-      if (gesture.locked && e.pointerType === 'touch' && vertical(e.clientX, e.clientY)) e.stopImmediatePropagation();
-    }, active);
-    for (const type of ['touchend', 'pointerup']) {
-      window.addEventListener(type, (e) => {
-        if (type === 'pointerup' && e.pointerType !== 'touch') return;
-        if (!gesture.locked || gesture.axis !== 'y') return;
-        e.stopImmediatePropagation();
-        if (e.cancelable) e.preventDefault();
-        cancelForInstagram();
-      }, active);
-    }
-    window.addEventListener('wheel', (e) => {
-      if (lockApplies(e.target)) { e.preventDefault(); e.stopImmediatePropagation(); }
-    }, active);
-
-    // A heads-up across the top that goes away by itself (or when tapped).
+    // A note across the top that goes away by itself (or when tapped).
     let noteTimer = 0;
-    function note(text, emoji = '🎲') {
+    function note(text, emoji = '🎬') {
       const host = document.body || document.documentElement;
       if (!host) return;
       document.getElementById('cf-note')?.remove();
@@ -712,153 +550,45 @@
       el.addEventListener('click', () => el.classList.add('gone'));
       host.appendChild(el);
       clearTimeout(noteTimer);
-      noteTimer = setTimeout(() => { el.classList.add('gone'); setTimeout(() => el.remove(), 400); }, 6000);
+      noteTimer = setTimeout(() => { el.classList.add('gone'); setTimeout(() => el.remove(), 400); }, 5000);
     }
-    function notes() {
-      if (!settings.dmReels) return;
-      const state = load(NOTE_KEY, sessionStorage) || {};
-      if (state.pending && document.body) { // left over from just before the chat reloaded
-        note(state.pending, '🙅');
-        delete state.pending;
-        save(NOTE_KEY, state, sessionStorage);
-      } else if (!state.chat && document.body && location.pathname.startsWith('/direct/t/')) {
-        state.chat = true; // once a visit is plenty
-        save(NOTE_KEY, state, sessionStorage);
-        note(pick(NOTES.chat));
-      }
+    function pendingNote() { // left over from just before the chat reloaded
+      const state = load(NOTE_KEY, sessionStorage);
+      if (!state?.pending || !document.body) return;
+      sessionStorage.removeItem(NOTE_KEY);
+      note(state.pending);
     }
-
-    // One reel per tap in Messages.
-    let firstReel = null; // { el, src } of the reel the pop-up opened with
-    let viewerSeenAt = 0;
-    const videoSrc = (v) => v.currentSrc || v.src || v.querySelector('source')?.src || '';
-    function checkViewer() {
-      if (!location.pathname.startsWith('/direct/') || player) { firstReel = null; return; }
-      const v = viewerVideo();
-      if (!v) {
-        if (firstReel && Date.now() - viewerSeenAt > 1500) { firstReel = null; reelLog('pop-up closed'); }
-        return;
-      }
-      viewerSeenAt = Date.now();
-      const src = videoSrc(v);
-      if (!settings.dmReels) return closeViewer('reels from Messages are switched off');
-      if (!firstReel) {
-        firstReel = { el: v, src };
-        note(pick(NOTES.popup), '👀');
-        reelLog(`pop-up opened (${v.paused ? 'paused' : 'playing'}, ${Math.round(v.getBoundingClientRect().height)}px tall)`);
-        return;
-      }
-      if (v === firstReel.el && !firstReel.src) { firstReel.src = src; return; }
-      if (v !== firstReel.el || (src && firstReel.src && src !== firstReel.src)) closeViewer('a second reel started');
-    }
-    function closeViewer(why) {
-      reelLog(`closed the pop-up: ${why}`);
-      if (settings.dmReels) save(NOTE_KEY, { ...load(NOTE_KEY, sessionStorage), pending: pick(NOTES.blocked) }, sessionStorage);
-      for (const v of document.querySelectorAll('video:not(#cf-video)')) { v.muted = true; v.pause(); }
-      firstReel = null;
-      const nav = load(NAV_KEY, sessionStorage) || {};
-      location.replace(nav.direct || location.pathname);
-    }
-    document.addEventListener('playing', checkViewer, true);
-    document.addEventListener('play', () => setTimeout(checkViewer, 50), true);
-
-    // Instagram's own video players stay silent and still while ours is open.
-    document.addEventListener('play', (e) => {
-      if (player && e.target !== player.querySelector('video')) { e.target.muted = true; e.target.pause(); }
-    }, true);
 
     function tick() {
       addHead();
       const path = location.pathname;
       const route = routeFor(path, people());
       document.documentElement?.classList.toggle('cf-story', route === 'story');
-      document.documentElement?.classList.toggle('cf-reel', !!player);
-      checkViewer();
-      if (settings.dmReels && path.startsWith('/direct/t/')) loadChatReels();
-      notes();
-      if (player) {
-        if (!player.isConnected) (document.body || document.documentElement)?.appendChild(player); // also before the page has drawn
-        for (const v of document.querySelectorAll('video:not(#cf-video)')) if (!v.paused) { v.muted = true; v.pause(); }
+      if (path.startsWith('/direct/')) {
+        checkViewer();
+        if (path.startsWith('/direct/t/')) { loadChatReels(); markReels(); }
       }
+      pendingNote();
       if (path !== lastPath) {
         lastPath = path;
         // Remembered across page loads: where you just were, and your last conversation.
         const nav = load(NAV_KEY, sessionStorage) || {};
-        const prev = nav.path;
+        const prev = nav.path || '';
         nav.path = path;
         if (path.startsWith('/direct/')) nav.direct = path;
-        if (route === 'reel') {
-          // Opened a reel's address from a chat without our tap catching it: cover Instagram's
-          // viewer with our player, which plays only that reel.
-          const code = reelCode(path);
-          const verdict = reelDecision(code, prev, nav.reel, settings.dmReels);
-          reelLog(`reel address ${path} from ${prev || 'nowhere'}: ${verdict}`);
-          nav.reel = verdict === 'allow' ? code : '';
-          save(NAV_KEY, nav, sessionStorage);
-          if (verdict === 'back') {
-            save(NOTE_KEY, { ...load(NOTE_KEY, sessionStorage), pending: pick(NOTES.blocked) }, sessionStorage);
-            return location.replace(nav.direct || '/direct/inbox/'); // no moving on to more reels
-          }
-          if (verdict === 'block') return location.replace('/');
-          if (player?.dataset.code !== code) openPlayer(code, true);
-          return;
-        }
-        nav.reel = '';
         save(NAV_KEY, nav, sessionStorage);
-        if (player) closePlayer(false);
+        if (route === 'reel') {
+          // A reel's own address: never shown. Back to the chat it came from, or home.
+          if (!prev.startsWith('/direct/')) return location.replace('/');
+          save(NOTE_KEY, { pending: pick(NOTES.closed) }, sessionStorage);
+          return location.replace(nav.direct || '/direct/inbox/');
+        }
         if (route === 'block') return location.replace(path.startsWith('/stories/') ? nextStory(path) : '/');
         if (route === 'to-search') return location.replace('/explore/search/');
         if (route === 'story') takeFromQueue(path);
       }
       if (route === 'home' && !needsLogin && !loginShowing()) show();
       else hide();
-    }
-
-    // One video, a way back, and nothing else.
-    function openPlayer(code, onReelPage) {
-      if (player) player.remove();
-      player = document.createElement('div');
-      player.id = 'cf-player';
-      player.dataset.code = code;
-      player.dataset.page = onReelPage ? '1' : '';
-      player.innerHTML = '<div class="top"><button type="button" class="back">‹ Back to chat</button><span class="who"></span></div>'
-        + '<div class="stage"><div class="msg">Loading the reel…</div></div><div class="cap"></div>'
-        + '<div class="cap" style="color:#888;font-size:12px">One reel, no sequels. Not what you were sent? Blame Instagram, then tap Back.</div>';
-      player.querySelector('.back').addEventListener('click', () => closePlayer(true));
-      (document.body || document.documentElement)?.appendChild(player); // or on the next check, if the page isn't there yet
-      document.documentElement?.classList.add('cf-reel');
-      for (const v of document.querySelectorAll('video')) { v.muted = true; v.pause(); }
-      const mine = player;
-      const id = mediaId(code);
-      const known = chatReels.videos[code];
-      (known ? Promise.resolve(null) : id ? igGet(`/api/v1/media/${id}/info/`) : Promise.reject(new Error('no code')))
-        .then((json) => {
-          if (player !== mine) return;
-          const reel = known || reelVideo(json);
-          if (!reel) throw new Error('no video');
-          const v = Object.assign(document.createElement('video'), { id: 'cf-video', src: reel.url, poster: reel.poster, controls: true, loop: true, playsInline: true });
-          v.setAttribute('playsinline', '');
-          mine.querySelector('.stage').replaceChildren(v);
-          mine.querySelector('.who').textContent = reel.user ? '@' + reel.user : '';
-          mine.querySelector('.cap').textContent = reel.caption;
-          v.play().catch(() => { v.muted = true; v.play().catch(() => {}); }); // iPhone may only allow silent autoplay; the sound button is in the controls
-        })
-        .catch((err) => {
-          reelLog(`own player couldn't load ${code}: ${err.message}`);
-          if (player !== mine) return;
-          mine.querySelector('.stage').innerHTML = '<div class="msg">Instagram wouldn\'t load this reel here. It may be private or removed.</div>';
-        });
-    }
-
-    function closePlayer(goBack) {
-      const onReelPage = player?.dataset.page;
-      player?.remove();
-      player = null;
-      document.documentElement?.classList.remove('cf-reel');
-      if (goBack && onReelPage) {
-        const nav = load(NAV_KEY, sessionStorage) || {};
-        location.replace(nav.direct || '/direct/inbox/');
-      }
     }
 
     // Watching stories: when Instagram moves on to someone who isn't on the list, go to the next
@@ -1285,15 +1015,8 @@
           ${step ? '<button type="button" data-act="back">Back</button>' : '<span></span>'}
           <button type="button" class="primary" data-act="${last ? 'finish' : 'next'}">${last ? 'Start' : step ? 'Next' : 'Get started'}</button>
         </div>
-        ${settings.onboarded ? `<div class="card"><b>Options</b>
-          <label class="row" style="flex-wrap:nowrap"><input type="checkbox" id="cf-dmreels"${settings.dmReels ? ' checked' : ''}>
-            <span>Play reels people send me in Messages (just the one they sent; no swiping on to more)</span></label></div>
-          <div class="card"><b>🎲 Known quirk: reels in Messages</b>
-            <p class="status">Sometimes Instagram plays one of its own reels instead of the one your friend sent. FiniteGram can't always stop the switch, but it does stop the swiping: you get one reel, then it's back to the chat. If a reel looks like it came from a stranger, it probably did. Tell your friend to just describe it.</p></div>
-          <details class="card"><summary>Reel check</summary>
-            <p class="status">If reels from Messages still misbehave: open a chat, tap the reel, try to swipe, then come back here, tap Copy and paste it to whoever is helping you.</p>
-            <pre style="white-space:pre-wrap;font-size:11px;max-height:14em;overflow:auto">${escapeHtml(reelLogText())}</pre>
-            <button type="button" data-act="copyreellog">Copy</button></details>
+        ${settings.onboarded ? `<div class="card"><b>🎬 Reels in Messages</b>
+            <p class="status">When a friend sends you a reel, you'll see it in the chat, greyed out, but it won't open. Ask them what happens in it.</p></div>
           <p class="end"><a href="#" data-act="home">Back to stories</a></p>` : ''}`;
     }
 
@@ -1345,9 +1068,6 @@
       if (e.target.id === 'cf-filter') {
         filter = e.target.value;
         renderPart();
-      } else if (e.target.id === 'cf-dmreels') {
-        settings.dmReels = e.target.checked;
-        saveSettings();
       } else if (e.target.dataset.rename) {
         const l = settings.info.find((x) => x.id === e.target.dataset.rename);
         const name = e.target.value.trim().slice(0, 40);
@@ -1447,9 +1167,6 @@
           input.click();
           break;
         }
-        case 'copyreellog':
-          navigator.clipboard?.writeText(reelLogText()).then(() => { b.textContent = 'Copied'; }, () => {});
-          break;
         case 'copyurl':
           navigator.clipboard?.writeText('x-safari-https://www.instagram.com').then(() => { b.textContent = 'Copied'; }, () => {});
           break;
@@ -1478,7 +1195,7 @@
     setInterval(tick, 400);
   }
 
-  const api = { reelDecision, reelCode, mediaId, reelVideo, imageKey, reelsInMessages, threadItems, normalizeName, namesFromText, readSettings, shortLabel, newListId, routeFor, storyGroups, usersFromPage, sortRows, followingSummary };
+  const api = { reelCode, imageKey, reelsInMessages, threadItems, normalizeName, namesFromText, readSettings, shortLabel, newListId, routeFor, storyGroups, usersFromPage, sortRows, followingSummary };
   if (typeof window !== 'undefined' && window.__FINITY_CF_TEST__) window.__FINITY_CF_TEST__ = api;
   else start();
 })();
