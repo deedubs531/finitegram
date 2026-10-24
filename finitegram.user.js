@@ -1,15 +1,15 @@
 // ==UserScript==
-// @name         FiniteGram
+// @name         Story time
 // @namespace    finity
-// @version      7.2.0
+// @version      8.0.0
 // @description  Replaces the instagram.com home feed with stories from lists you choose. No ads, reels or endless scrolling.
 // @match        https://www.instagram.com/*
 // @match        https://instagram.com/*
 // @run-at       document-start
 // @grant        none
 // @noframes
-// @downloadURL  https://deedubs531.github.io/finitegram/finitegram.user.js
-// @updateURL    https://deedubs531.github.io/finitegram/finitegram.user.js
+// @downloadURL  https://deedubs531.github.io/finitegram/storytime.user.js
+// @updateURL    https://deedubs531.github.io/finitegram/storytime.user.js
 // @homepageURL  https://deedubs531.github.io/finitegram/
 // ==/UserScript==
 
@@ -22,28 +22,22 @@
 (function () {
   'use strict';
 
-  const VERSION = '7.2';
-  const APP_NAME = 'FiniteGram'; // the name offered when adding to the home screen
+  const VERSION = '8.0';
+  const APP_NAME = 'Story time'; // the name offered when adding to the home screen
   const SETTINGS_KEY = 'finity-close-friends';
   const STORIES_KEY = 'finity-cf-stories';
   const FOLLOWING_KEY = 'finity-cf-following';
-  const OLD_KEYS = ['finity-cf-cache', 'finity-cf-cache-v2', 'finity-cf-ids']; // from 3.x, which also tried to load posts
+  const OLD_KEYS = ['finity-cf-cache', 'finity-cf-cache-v2', 'finity-cf-ids', 'finity-cf-postcache']; // posts kept by 3.x and 7.x, which no longer exist
   const VIEW_KEY = 'finity-cf-view'; // where you were on the sorting screen, kept while you look at a profile
   const ME_KEY = 'finity-cf-me'; // which account is logged in, checked once per visit
   const QUEUE_KEY = 'finity-cf-queue'; // the rest of the list's new stories, while you're watching
   const NAV_KEY = 'finity-cf-nav'; // the previous page and the last conversation
-  const POSTS_KEY = 'finity-cf-postcache'; // recent posts from everyone you follow, read from Instagram's Following feed
-  const MODE_KEY = 'finity-cf-mode'; // 'posts' while the Posts page is open (kept while you look at a post)
-  const HARVEST_KEY = 'finity-cf-harvest'; // set while reading the feed in this tab (when the background way isn't allowed)
-  const POST_DAYS = 3; // posts go back this far, then "You're caught up"
-  const POSTS_FRESH_MS = 20 * 60000; // read the feed again in the background after this long
-  const READ_STEP_MS = 900; // between scrolls while reading the feed
   const NOTE_KEY = 'finity-cf-note'; // a note to show once the chat has reloaded
   // Reels people send you show up in the chat but don't open. One of these is picked at random.
   const NOTES = {
     tap: [
       "Reels don't open here. Ask them what happens in it.",
-      'No reels on FiniteGram. Send a 😂 and carry on.',
+      'No reels in Story time. Send a 😂 and carry on.',
       "That one stays shut. Tell them it's hilarious anyway.",
       'Reels are off here. Get the story in person.',
     ],
@@ -145,26 +139,6 @@
     const story = path.match(/^\/stories\/([^/]+)/);
     if (story) return story[1] === 'highlights' || people.has(story[1]) ? 'story' : 'block';
     return 'ok';
-  }
-
-  /** The posts to show for a list: by people on it, photos only, newest first, back to `cutoff`. */
-  function postsForList(cache, people, cutoff) {
-    return Object.entries(cache?.posts || {})
-      .map(([code, p]) => ({ code, author: p[0], t: p[1], img: p[2], ratio: p[3] || 1.25, more: !!p[4], video: !!p[5] }))
-      .filter((p) => people.has(p.author) && !p.video && p.img && p.t >= cutoff)
-      .sort((a, b) => b.t - a.t);
-  }
-
-  /**
-   * How far reading the feed has got: the oldest post reached, as a share of the days wanted, and
-   * a guess at the time left from the pace so far (null until there's enough to go on).
-   */
-  function readProgress(oldest, now, startedAt, days) {
-    const want = days * 86400000;
-    const done = oldest ? Math.min(1, Math.max(0, (now - oldest) / want)) : 0;
-    const spent = now - startedAt;
-    const left = done >= 0.05 && done < 1 ? Math.round((spent * (1 - done)) / done) : null;
-    return { done, left };
   }
 
   /** The reel code in a link or address (/reel/CODE/, /reels/CODE/), or ''. */
@@ -280,7 +254,7 @@
       }
     }
     const fromAcct = filter.startsWith('acct:') ? new Set((followingByAccount?.[filter.slice(5)]?.users || []).map(([n]) => n)) : null;
-    const newAt = {}; // followed recently: when FiniteGram first noticed
+    const newAt = {}; // followed recently: when Story time first noticed
     for (const acct of Object.values(followingByAccount || {})) for (const [n, t] of Object.entries(acct.newAt || {})) newAt[n] = Math.max(newAt[n] || 0, t);
     for (const members of Object.values(lists)) for (const n of members) if (!names.has(n)) names.set(n, { full: '', pic: '' });
     const q = normalizeName(query);
@@ -449,19 +423,6 @@
     #cf .donebar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1; display: flex; justify-content: center;
       padding: 10px 16px calc(env(safe-area-inset-bottom, 0px) + 8px); background: linear-gradient(transparent, var(--bg) 30%); }
     #cf .donebar button { min-width: 60%; padding: 11px 20px; font-size: 16px; }
-    #cf-reader { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; z-index: -1; opacity: .01; pointer-events: none; contain: strict; }
-    #cf .posts { display: flex; flex-direction: column; gap: 18px; margin: 0 -16px; }
-    #cf .post { display: block; color: inherit; text-decoration: none; }
-    #cf .post .ph { display: flex; justify-content: space-between; gap: 8px; padding: 0 16px 8px; font-size: 14px; }
-    #cf .post .ph b { font-weight: 600; }
-    #cf .post .ph span { color: var(--muted); }
-    #cf .post .pic { position: relative; background: var(--line); }
-    #cf .post img { display: block; width: 100%; height: 100%; object-fit: cover; }
-    #cf .post .more { position: absolute; top: 10px; right: 10px; padding: 3px 8px; border-radius: 10px; background: rgba(0,0,0,.6); color: #fff; font-size: 12px; }
-    #cf .progress { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
-    #cf .progress span { display: block; height: 100%; background: var(--accent); transition: width .6s; }
-    #cf .modes { display: flex; gap: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; align-self: flex-start; }
-    #cf .modes button { border: 0; border-radius: 0; padding: 8px 18px; }
     #cf .newlist { border-style: dashed; color: var(--muted); }
     #cf .newfollows { display: inline-block; padding: 7px 12px; border-radius: 16px; background: var(--card); border: 1px solid var(--line); color: inherit; text-decoration: none; font-size: 14px; }
     #cf .end { text-align: center; color: var(--muted); padding: 12px 0; font-size: 13px; }
@@ -477,8 +438,7 @@
     } catch {
       // Nothing to tidy.
     }
-    const savedMode = (() => { try { return sessionStorage.getItem(MODE_KEY); } catch { return ''; } })();
-    let view = !settings.onboarded ? 'setup' : savedMode === 'posts' ? 'posts' : 'stories'; // 'stories', 'posts', 'sort' or 'setup'
+    let view = settings.onboarded ? 'stories' : 'setup'; // 'stories', 'sort' or 'setup'
     let step = 0; // which setup page
     let loading = false;
     let problem = '';
@@ -506,7 +466,7 @@
     let lastPath = null;
 
     // --- reels in Messages: you can see that one was sent, but it doesn't open ---
-    // FiniteGram reads the chat's messages (the same ones Instagram's page loads) to learn which
+    // Story time reads the chat's messages (the same ones Instagram's page loads) to learn which
     // preview pictures are reels, greys those out with a label, and swallows taps on them.
     let chatReels = { id: '', at: 0, loading: false, byImage: {} };
     function loadChatReels() {
@@ -626,139 +586,6 @@
       note(state.pending);
     }
 
-    // --- posts ---
-    // Instagram's Following feed (newest first, only people you follow) is read in the background,
-    // in a hidden copy of the page, going back POST_DAYS days. The posts are kept on this phone and
-    // shown here per list, so switching lists is instant and nothing moves while you read.
-    let postCache = load(POSTS_KEY) || { at: 0, complete: false, posts: {} };
-    let reading = null; // { startedAt, oldest, checked, step } while the feed is being read
-    let readProblem = '';
-    const postsFresh = () => postCache.complete && Date.now() - postCache.at < POSTS_FRESH_MS;
-    function setMode(m) {
-      view = m;
-      try { sessionStorage.setItem(MODE_KEY, m); } catch { /* fine */ }
-    }
-
-    /** A post's author, time, and whether it's a video, reel or ad. */
-    function postInfo(article) {
-      let author = '';
-      for (const a of article.querySelectorAll('a[href]')) {
-        const m = (a.getAttribute('href') || '').match(/^(?:https:\/\/www\.instagram\.com)?\/([A-Za-z0-9._]{1,30})\/?$/);
-        if (m && !['explore', 'direct', 'accounts', 'reels', 'stories', 'p', 'reel'].includes(m[1].toLowerCase())) { author = normalizeName(m[1]); break; }
-      }
-      const time = article.querySelector('time[datetime]');
-      const t = time ? Date.parse(time.getAttribute('datetime')) || 0 : 0;
-      const video = !!article.querySelector('video, a[href*="/reel/"], a[href*="/reels/"]');
-      const ad = !time || /\b(Sponsored|Paid partnership)\b/.test(article.textContent || '');
-      return { author, t, video, ad };
-    }
-
-    /** Everything kept about one post in the feed: [author, time, picture, height/width, more pictures, video]. */
-    function harvest(article) {
-      const info = postInfo(article);
-      const link = [...article.querySelectorAll('a[href]')].map((a) => (a.getAttribute('href') || '').match(/\/p\/([A-Za-z0-9_-]+)/)).find(Boolean);
-      if (!link || info.ad || !info.author || !info.t) return null;
-      let best = null;
-      for (const img of article.querySelectorAll('img')) {
-        if (/profile picture/i.test(img.alt || '') || img.closest('header')) continue;
-        const w = Math.max(img.naturalWidth || 0, Number(img.getAttribute('width')) || 0, img.getBoundingClientRect().width); // avatars are small
-        if (w >= 150 && (!best || w > best.w)) best = { img, w };
-      }
-      let url = '';
-      let ratio = 0;
-      if (best) {
-        const options = (best.img.getAttribute('srcset') || '').split(',').map((x) => x.trim().split(/\s+/)).filter((x) => x[0]).map(([u, w]) => [u, parseInt(w, 10) || 0]);
-        const pick = options.filter(([, w]) => w >= 600).sort((a, b) => a[1] - b[1])[0] || options.sort((a, b) => b[1] - a[1])[0];
-        url = pick ? pick[0] : best.img.currentSrc || best.img.src;
-        const { naturalWidth: nw, naturalHeight: nh } = best.img;
-        if (nw && nh) ratio = Math.round((nh / nw) * 100) / 100;
-      }
-      const more = !!article.querySelector('button[aria-label="Next"], [aria-label*="Next" i]');
-      return [link[1], [info.author, info.t, url, ratio, more ? 1 : 0, info.video ? 1 : 0]];
-    }
-
-    // Read the feed: in a hidden copy of the page if Instagram allows it, otherwise right here in
-    // this tab with our page covering it (then back to the Posts page when done).
-    function readPosts(here = false) {
-      if (reading) return;
-      if (!here && postCache.noBackground) { readProblem = 'background'; return render(); }
-      readProblem = '';
-      const startedAt = Date.now();
-      reading = { startedAt, oldest: 0, checked: 0, step: 'Opening your Following feed…' };
-      render();
-      let frame = null;
-      let win = window;
-      if (!here) {
-        frame = document.createElement('iframe');
-        frame.id = 'cf-reader';
-        frame.setAttribute('aria-hidden', 'true');
-        frame.tabIndex = -1;
-        frame.src = '/?variant=following';
-        document.body.appendChild(frame);
-        win = null;
-      }
-      const cutoff = startedAt - POST_DAYS * 86400000;
-      const before = postCache;
-      const found = {};
-      let known = 0; // posts already kept from last time: once enough turn up, the rest is known
-      let lastNewAt = Date.now();
-      const finish = (complete, problem = '') => {
-        clearInterval(timer);
-        frame?.remove();
-        // Keep what was found, plus what was kept before (unless a full read replaced it), trimmed to the days wanted.
-        const posts = {};
-        for (const [c, p] of Object.entries({ ...(complete && !before.complete ? {} : before.posts), ...found })) if (p[1] >= cutoff) posts[c] = p;
-        postCache = { at: complete ? Date.now() : before.at, complete: complete || before.complete, posts,
-          noBackground: problem === 'background' || (before.noBackground && here) }; // remembered, so it isn't tried in vain each time
-        save(POSTS_KEY, postCache);
-        reading = null;
-        readProblem = problem;
-        if (here) {
-          try { sessionStorage.removeItem(HARVEST_KEY); } catch { /* fine */ }
-          return location.replace('/');
-        }
-        render();
-      };
-      const timer = setInterval(() => {
-        const doc = here ? document : frame?.contentDocument;
-        if (!here) win = frame?.contentWindow;
-        const articles = doc ? [...doc.querySelectorAll('article')] : [];
-        if (!articles.length) {
-          if (Date.now() - startedAt > 15000) {
-            if (here) return finish(false, "Instagram's Following feed didn't load. Try again in a while.");
-            return finish(false, 'background'); // not allowed in the background: offer to read it here
-          }
-          return;
-        }
-        for (const v of doc.querySelectorAll('video')) { v.muted = true; if (!v.paused) v.pause(); }
-        for (const a of articles) {
-          const got = harvest(a);
-          if (!got || found[got[0]]) continue;
-          found[got[0]] = got[1];
-          reading.checked++;
-          lastNewAt = Date.now();
-          if (before.complete && before.posts[got[0]]) known++;
-          if (!reading.oldest || got[1][1] < reading.oldest) reading.oldest = got[1][1];
-        }
-        const older = Object.values(found).filter((p) => p[1] < cutoff).length;
-        const { left } = readProgress(reading.oldest, Date.now(), startedAt, POST_DAYS);
-        reading.step = `Reading the last ${POST_DAYS} days of posts: reached ${reading.oldest ? ago(reading.oldest) : 'the newest'} · ${reading.checked} checked`
-          + (left != null ? ` · ${left < 60000 ? 'less than a minute' : `about ${Math.round(left / 60000)} min`} left` : '');
-        if (older >= 3 || (before.complete && known >= 8)) return finish(true); // back far enough, or caught up with last time
-        if (Date.now() - lastNewAt > 25000 || Date.now() - startedAt > 6 * 60000) return finish(Object.keys(found).length > 0 && !!reading.oldest && reading.oldest < cutoff + 86400000);
-        // Show what's arrived so far, then ask Instagram for more.
-        if (Object.keys(found).length) { postCache = { ...postCache, posts: { ...postCache.posts, ...found } }; }
-        if (view === 'posts') render();
-        // Scroll the feed's own page to the bottom so Instagram loads more. (Not scrollIntoView:
-        // on iPhone that can scroll the visible page too, making it jump.)
-        for (let n = articles[articles.length - 1].parentElement; n && n !== doc.documentElement; n = n.parentElement) {
-          if (n.scrollHeight > n.clientHeight + 1 && /(auto|scroll)/.test((win || window).getComputedStyle(n).overflowY)) n.scrollTop = n.scrollHeight;
-        }
-        if (!here) win?.scrollTo(0, doc.documentElement.scrollHeight);
-        else window.scrollTo(0, document.documentElement.scrollHeight);
-      }, READ_STEP_MS);
-    }
-
     function tick() {
       addHead();
       const path = location.pathname;
@@ -789,11 +616,6 @@
       }
       if (route === 'home' && !needsLogin && !loginShowing()) show();
       else hide();
-      if (route === 'home' && root && !reading && load(HARVEST_KEY, sessionStorage) && location.search.includes('variant=following')) {
-        document.documentElement.classList.remove('cf-on'); // let the feed underneath scroll
-        setMode('posts');
-        readPosts(true);
-      }
     }
 
     // Watching stories: when Instagram moves on to someone who isn't on the list, go to the next
@@ -849,7 +671,6 @@
         else refreshStories();
         checkAccount();
         checkNewFollows();
-        if (settings.onboarded && !postsFresh() && !postCache.noBackground && !load(HARVEST_KEY, sessionStorage)) setTimeout(() => { if (root && !postsFresh()) readPosts(); }, 1500); // posts ready before you ask
       }
     }
 
@@ -861,7 +682,6 @@
       } catch {
         // Nothing to clear.
       }
-      if (spot?.view === 'posts') { setMode('posts'); return spot; }
       if (spot?.view !== 'sort') return null;
       view = 'sort';
       query = String(spot.query || '');
@@ -879,7 +699,7 @@
         el.classList.toggle('cf-ready', label === 'Release to refresh' || label === 'Refreshing…');
       };
       el.addEventListener('touchstart', (e) => {
-        pull = (view === 'stories' || view === 'posts') && !loading && el.scrollTop <= 0 && e.touches.length === 1 ? { y0: e.touches[0].clientY, d: 0 } : null;
+        pull = view === 'stories' && !loading && el.scrollTop <= 0 && e.touches.length === 1 ? { y0: e.touches[0].clientY, d: 0 } : null;
       }, { passive: true });
       el.addEventListener('touchmove', (e) => {
         if (!pull) return;
@@ -895,8 +715,7 @@
         pull = null;
         if (!go) return set(0, true);
         set(56, true, 'Refreshing…');
-        if (view === 'posts') { readPosts(); set(0, true); } // progress shows on the page
-        else refreshStories().then(() => set(0, true));
+        refreshStories().then(() => set(0, true));
       };
       el.addEventListener('touchend', release);
       el.addEventListener('touchcancel', release);
@@ -1060,11 +879,7 @@
     let shown = '';
     function render() {
       if (!root) return;
-      if (view === 'posts' && root.querySelector('#cf-plist')) { // already on the Posts page: update it in place
-        shown = '';
-        return updatePosts();
-      }
-      const body = view === 'sort' ? sortView() : view === 'setup' ? setupView() : view === 'posts' ? postsView() : storiesView();
+      const body = view === 'sort' ? sortView() : view === 'setup' ? setupView() : storiesView();
       const bottom = view === 'sort'
         ? '<div class="donebar"><button type="button" class="primary" data-act="done">Done</button></div>'
         : view === 'setup' && !settings.onboarded ? '' : tabbar(); // first-time setup stays on its steps
@@ -1088,7 +903,7 @@
 
     function listButtons() {
       return settings.info.map((l) =>
-        `<button type="button" data-list="${l.id}" aria-pressed="${(view === 'stories' || view === 'posts') && l.id === settings.active}">${escapeHtml(l.name)} (${settings.lists[l.id].length})</button>`).join('')
+        `<button type="button" data-list="${l.id}" aria-pressed="${view === 'stories' && l.id === settings.active}">${escapeHtml(l.name)} (${settings.lists[l.id].length})</button>`).join('')
         + '<button type="button" class="newlist" data-act="newlist" aria-label="New list">＋ New list</button>';
     }
 
@@ -1116,96 +931,6 @@
       return `<a class="story${seen ? ' seen' : ''}" data-user="${escapeHtml(n)}" href="/stories/${encodeURIComponent(n)}/"><span class="ring">${face}</span><span class="handle">@${escapeHtml(n)}</span></a>`;
     }
 
-    function modes() {
-      return `<div class="modes"><button type="button" data-act="stories" aria-pressed="${view === 'stories'}">Stories</button><button type="button" data-act="posts" aria-pressed="${view === 'posts'}">Posts</button></div>`;
-    }
-
-    // The Posts page is drawn once, then only its changing parts are updated in place: the
-    // progress line, and new posts slotted in among the ones already showing (whose pictures are
-    // never redrawn), so nothing flickers while posts are being read.
-    function postsParts() {
-      const cutoff = Date.now() - POST_DAYS * 86400000;
-      const listed = settings.lists[settings.active].length > 0;
-      const posts = listed ? postsForList(postCache, people(), cutoff) : [];
-      const status = reading ? ''
-        : readProblem === 'background'
-          ? `<div class="card"><p>${postCache.at ? `Updated ${ago(postCache.at)}. ` : ''}Instagram doesn't let FiniteGram read posts in the background, so it reads them right here: tap below and it takes a minute or two, then your posts are waiting.</p>
-              <div class="row"><button type="button" class="primary" data-act="readhere">Read posts now</button></div></div>`
-          : readProblem ? `<p class="status error" role="alert">${escapeHtml(readProblem)}</p>`
-            : postCache.at ? `<p class="status">Updated ${ago(postCache.at)} · pull down to refresh</p>` : '';
-      const empty = !listed
-        ? `<p class="status">No one in ${escapeHtml(listName())} yet. Tap Sort accounts to add people.</p>`
-        : !posts.length && !reading && postCache.complete ? `<p class="status">No posts from ${escapeHtml(listName())} in the last ${POST_DAYS} days.</p>` : '';
-      const end = posts.length && postCache.complete && !reading ? `<p class="end">You're caught up: that's everything from ${escapeHtml(listName())} in the last ${POST_DAYS} days.</p>`
-        : reading && posts.length ? '<p class="end">More on the way…</p>' : '';
-      return { posts, status, empty, end };
-    }
-    const postCard = (p) => `<a class="post" data-code="${escapeHtml(p.code)}" href="/p/${encodeURIComponent(p.code)}/">
-          <div class="ph"><b>@${escapeHtml(p.author)}</b><span>${escapeHtml(ago(p.t))}</span></div>
-          <div class="pic" style="aspect-ratio:1/${p.ratio}"><img src="${escapeHtml(p.img)}" alt="Post by @${escapeHtml(p.author)}" loading="lazy">${p.more ? '<span class="more">1 of more ›</span>' : ''}</div></a>`;
-    const progressHtml = () => {
-      if (!reading) return '';
-      const { done } = readProgress(reading.oldest, Date.now(), reading.startedAt, POST_DAYS);
-      return `<p class="status" role="status">${escapeHtml(reading.step)}</p><div class="progress" aria-hidden="true"><span style="width:${Math.max(4, Math.round(done * 100))}%"></span></div>`;
-    };
-
-    function postsView() {
-      const { posts, status, empty, end } = postsParts();
-      return `<div class="lists" id="cf-lists">${listButtons()}</div>
-        ${modes()}
-        <div id="cf-pstatus">${reading ? progressHtml() : status}</div>
-        <h2 id="cf-ph">Posts · ${escapeHtml(listName())}</h2>
-        <div id="cf-pempty">${empty}</div>
-        <div class="posts" id="cf-plist">${posts.map(postCard).join('')}</div>
-        <div id="cf-pend">${end}</div>
-        <p class="end">${APP_NAME} ${VERSION} · <a href="#" data-act="setup">Setup & help</a></p>`;
-    }
-
-    const drawn = new WeakMap(); // element → the HTML last put in it
-    function setHtml(el, html) {
-      if (!el || drawn.get(el) === html) return;
-      drawn.set(el, html);
-      el.innerHTML = html;
-    }
-    function updatePosts() {
-      const { posts, status, empty, end } = postsParts();
-      setHtml(root.querySelector('#cf-lists'), listButtons());
-      setHtml(root.querySelector('#cf-ph'), `Posts · ${escapeHtml(listName())}`);
-      setHtml(root.querySelector('#cf-pempty'), empty);
-      setHtml(root.querySelector('#cf-pend'), end);
-      const box = root.querySelector('#cf-pstatus');
-      const bar = box.querySelector('.progress span');
-      if (reading && bar) { // just the words and the bar's length
-        const p = box.querySelector('p');
-        if (p.textContent !== reading.step) p.textContent = reading.step;
-        const { done } = readProgress(reading.oldest, Date.now(), reading.startedAt, POST_DAYS);
-        bar.style.width = `${Math.max(4, Math.round(done * 100))}%`;
-      } else setHtml(box, reading ? progressHtml() : status);
-      // Posts: keep the ones already there, add new ones in their place, drop ones that left.
-      const list = root.querySelector('#cf-plist');
-      const have = new Map([...list.children].map((n) => [n.dataset.code, n]));
-      posts.forEach((p, i) => {
-        let node = have.get(p.code);
-        if (!node) {
-          const t = document.createElement('template');
-          t.innerHTML = postCard(p).trim();
-          node = t.content.firstChild;
-        }
-        have.delete(p.code);
-        if (list.children[i] !== node) list.insertBefore(node, list.children[i] || null);
-      });
-      for (const n of have.values()) n.remove();
-      const tabs = root.querySelector('#cf-main > .tabbar');
-      const nextTabs = tabbar();
-      if (tabs && drawn.get(tabs) !== nextTabs) {
-        const t = document.createElement('template');
-        t.innerHTML = nextTabs.trim();
-        const fresh = t.content.firstChild;
-        drawn.set(fresh, nextTabs);
-        tabs.replaceWith(fresh);
-      }
-    }
-
     function storiesView() {
       const names = settings.lists[settings.active];
       const { fresh, seen } = stories.tray ? storyGroups({ tray: stories.tray }, people(), stories.watched) : { fresh: [], seen: [] };
@@ -1218,7 +943,6 @@
       }
       const wrongAccount = me?.name && settings.mainAccount && me.name !== settings.mainAccount;
       return `<div class="lists" id="cf-lists">${listButtons()}</div>
-        ${modes()}
         ${problem ? `<p class="status error" role="alert">${escapeHtml(problem)}</p>` : ''}
         ${wrongAccount ? `<p class="status error" role="alert">You're logged in as @${escapeHtml(me.name)}, so these are the stories that account follows. Switch to @${escapeHtml(settings.mainAccount)} on Instagram to see yours.</p>` : ''}
         ${newToSort() ? `<p><a href="#" class="newfollows" data-act="sortnew">✨ ${newToSort()} new ${newToSort() === 1 ? 'follow' : 'follows'} to sort ›</a></p>` : ''}
@@ -1429,10 +1153,6 @@
     }
 
     function onClick(e) {
-      if (e.target.closest('a.post')) {
-        save(VIEW_KEY, { view: 'posts', scroll: root.scrollTop }, sessionStorage);
-        return;
-      }
       if (e.target.closest('a[data-profile]')) {
         save(VIEW_KEY, { view, query, filter, scroll: root.scrollTop }, sessionStorage);
         return;
@@ -1450,7 +1170,7 @@
       if (b.dataset.list) {
         settings.active = b.dataset.list;
         saveSettings();
-        if (view !== 'posts') setMode('stories');
+        view = 'stories';
         return render();
       }
       if (b.dataset.tag) {
@@ -1479,13 +1199,6 @@
       switch (b.dataset.act) {
         case 'home': view = 'stories'; root.scrollTop = 0; render(); break;
         case 'sort': view = 'sort'; filter = newToSort() ? 'new' : ''; problem = ''; notice = ''; root.scrollTop = 0; render(); checkNewFollows(); break;
-        case 'posts': setMode('posts'); root.scrollTop = 0; render(); if (!reading && !postsFresh()) readPosts(); break;
-        case 'stories': setMode('stories'); root.scrollTop = 0; render(); break;
-        case 'readposts': readPosts(); break;
-        case 'readhere':
-          save(HARVEST_KEY, 1, sessionStorage);
-          location.assign('/?variant=following');
-          break;
         case 'sortnew': view = 'sort'; filter = 'new'; query = ''; problem = ''; notice = ''; root.scrollTop = 0; render(); break;
         case 'done': view = settings.onboarded ? 'stories' : 'setup'; query = ''; problem = ''; notice = ''; root.scrollTop = 0; render(); break;
         case 'setup': view = 'setup'; step = 0; root.scrollTop = 0; render(); break;
@@ -1566,7 +1279,7 @@
     setInterval(tick, 400);
   }
 
-  const api = { postsForList, readProgress, mergeNewFollows, reelCode, imageKey, reelsInMessages, threadItems, normalizeName, namesFromText, readSettings, shortLabel, newListId, routeFor, storyGroups, usersFromPage, sortRows, followingSummary };
+  const api = { mergeNewFollows, reelCode, imageKey, reelsInMessages, threadItems, normalizeName, namesFromText, readSettings, shortLabel, newListId, routeFor, storyGroups, usersFromPage, sortRows, followingSummary };
   if (typeof window !== 'undefined' && window.__FINITY_CF_TEST__) window.__FINITY_CF_TEST__ = api;
   else start();
 })();
