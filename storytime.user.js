@@ -1,15 +1,15 @@
 // ==UserScript==
 // @name         Story time
 // @namespace    finity
-// @version      8.0.0
+// @version      8.0.1
 // @description  Replaces the instagram.com home feed with stories from lists you choose. No ads, reels or endless scrolling.
 // @match        https://www.instagram.com/*
 // @match        https://instagram.com/*
 // @run-at       document-start
 // @grant        none
 // @noframes
-// @downloadURL  https://deedubs531.github.io/finitegram/storytime.user.js
-// @updateURL    https://deedubs531.github.io/finitegram/storytime.user.js
+// @downloadURL  https://raw.githubusercontent.com/deedubs531/finitegram/main/storytime.user.js
+// @updateURL    https://raw.githubusercontent.com/deedubs531/finitegram/main/storytime.user.js
 // @homepageURL  https://deedubs531.github.io/finitegram/
 // ==/UserScript==
 
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '8.0';
+  const VERSION = '8.0.1';
   const APP_NAME = 'Story time'; // the name offered when adding to the home screen
   const SETTINGS_KEY = 'finity-close-friends';
   const STORIES_KEY = 'finity-cf-stories';
