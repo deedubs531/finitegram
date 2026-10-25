@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Story time
 // @namespace    finity
-// @version      8.0.1
+// @version      8.0.2
 // @description  Replaces the instagram.com home feed with stories from lists you choose. No ads, reels or endless scrolling.
 // @match        https://www.instagram.com/*
 // @match        https://instagram.com/*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '8.0.1';
+  const VERSION = '8.0.2';
   const APP_NAME = 'Story time'; // the name offered when adding to the home screen
   const SETTINGS_KEY = 'finity-close-friends';
   const STORIES_KEY = 'finity-cf-stories';
@@ -1057,15 +1057,18 @@
           <div class="row"><button type="button" data-act="closefile">Load close_friends file</button></div></div>`,
 
         `<h2>Step 3 of 3</h2><h1>Put it on your home screen</h1>
+        <p>A Shortcut opens ${APP_NAME} in Safari every time, even if Brave, Chrome or another browser is your default. Takes two minutes:</p>
         <ol class="steps">
-          <li>In Safari, on this page, tap <b>Share</b> (the square with an arrow).</li>
-          <li>Tap <b>Add to Home Screen</b>. The name (${APP_NAME}) and icon are filled in; change the name if you like.</li>
-          <li>Tap <b>Add</b>. The new icon always opens in Safari, even if another browser is your default.</li>
+          <li>Press and hold this icon and choose <b>Save to Photos</b>.<br><img src="${ICON}" alt="${APP_NAME} icon" width="72" height="72" style="border-radius:16px;margin-top:6px"></li>
+          <li>Tap <b>Copy</b>: <code>x-safari-https://www.instagram.com</code> <button type="button" data-act="copyurl">Copy</button></li>
+          <li>Open the <b>Shortcuts</b> app and tap <b>＋</b>. Tap <b>Add Action</b>, search for <b>Open URLs</b> and tap it.</li>
+          <li>Tap the blue <b>URL</b> placeholder and paste.</li>
+          <li>Tap the name at the top and call it <b>${APP_NAME}</b>.</li>
+          <li>Tap the <b>Share</b> button (or the name's menu) → <b>Add to Home Screen</b>. Tap the small icon → <b>Choose Photo</b> → the icon you saved. Tap <b>Add</b>.</li>
         </ol>
         <p class="status">Then move the Instagram app off your home screen (or set a Screen Time limit on it), so this is where you go.</p>
-        <details><summary>Prefer a Shortcut?</summary>
-          <p class="status">In Shortcuts, make a shortcut with <b>Open URLs</b> set to the address below (it opens in Safari, not your default browser, on iOS 17 and later), then Add to Home Screen with any photo as the icon.</p>
-          <p><code>x-safari-https://www.instagram.com</code> <button type="button" data-act="copyurl">Copy</button></p>
+        <details><summary>Safari is already your default browser?</summary>
+          <p class="status">Then there's a quicker way: in Safari, on this page, tap <b>Share</b> → <b>Add to Home Screen</b>. The name and icon are filled in.</p>
         </details>`,
       ];
       step = Math.max(0, Math.min(step, steps.length - 1));
